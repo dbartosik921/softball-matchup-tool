@@ -1,0 +1,12 @@
+# Trackman files contain student-athlete data: never commit them (the test fixture is the one exception).
+*.csv
+*.xlsx
+!pipeline/tests/fixtures/*.csv
+.env
+.env.local
+__pycache__/
+.pytest_cache/
+.venv/
+node_modules/
+.next/
+.vercel/
