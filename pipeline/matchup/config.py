@@ -27,9 +27,10 @@ PLAY_RESULT_MAP = {
 # Trackman ID shape (12- and 13-digit IDs both occur). Anything Excel touched (1.00E+11, 123.0) fails.
 ID_PATTERN = r"^\d{6,15}$"
 
+# A file is a Trackman pitch log if it has these. PitchUID/GameUID are generated when absent
+# (some exports drop them); the date can come from Date, UTCDateTime/LocalDateTime or GameID.
 REQUIRED_COLUMNS = [
-    "PitchUID", "GameUID", "Date", "Pitcher", "PitcherId", "PitcherThrows", "Batter", "BatterId",
-    "BatterSide", "PitchCall", "Balls", "Strikes",
+    "Pitcher", "PitcherId", "PitcherThrows", "Batter", "BatterId", "BatterSide", "PitchCall", "Balls", "Strikes",
 ]
 
 # Trackman column -> pitches column, for values copied as-is.

@@ -52,15 +52,40 @@ def _read_raw(path: Path) -> pd.DataFrame:
     raise ValueError(f"Unsupported file type: {path.name}")
 
 
-def _parse_date(raw: str, game_id: str) -> date | None:
-    raw = (raw or "").strip()
-    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y"):
+class NotTrackmanFile(ValueError):
+    """A file in the folder that isn't a Trackman pitch log (scouting report, roster, ...)."""
+
+
+def _first(raw: pd.DataFrame, col: str):
+    if col not in raw:
+        return None
+    s = raw[col].dropna()
+    s = s[s.astype(str).str.strip() != ""]
+    return s.iloc[0] if len(s) else None
+
+
+def _parse_one_date(v) -> date | None:
+    v = ("" if v is None else str(v)).strip()
+    if not v:
+        return None
+    for fmt, text in (("%Y-%m-%d", v[:10]), ("%m/%d/%Y", v.split(" ")[0]), ("%m/%d/%y", v.split(" ")[0]),
+                      ("%Y%m%d", v[:8])):
         try:
-            return pd.to_datetime(raw[:10] if fmt == "%Y-%m-%d" else raw, format=fmt).date()
+            d = pd.to_datetime(text, format=fmt)
         except (ValueError, TypeError):
-            pass
-    m = re.match(r"^(\d{8})", game_id or "")
-    return pd.to_datetime(m.group(1), format="%Y%m%d").date() if m else None
+            continue
+        if not pd.isna(d):
+            return d.date()
+    return None
+
+
+def _game_date(raw: pd.DataFrame) -> date | None:
+    """Date column first, then the pitch timestamps, then the GameID prefix (20260424-...)."""
+    for col in ("Date", "LocalDateTime", "UTCDateTime", "GameID"):
+        d = _parse_one_date(_first(raw, col))
+        if d:
+            return d
+    return None
 
 
 def parse_file(path: str | Path, registry: Resolver | None = None) -> ParsedFile:
@@ -72,42 +97,53 @@ def parse_file(path: str | Path, registry: Resolver | None = None) -> ParsedFile
 
     missing = [c for c in C.REQUIRED_COLUMNS if c not in raw.columns]
     if missing:
-        raise ValueError(f"{path.name}: not a Trackman pitch file (missing {', '.join(missing)})")
+        raise NotTrackmanFile(f"not a Trackman pitch log (missing {', '.join(missing)})")
 
     raw = raw.replace({"": None, "NULL": None, "null": None})
+    raw = raw.dropna(how="all")
     rows_read = len(raw)
+    if rows_read == 0:
+        raise ValueError("file has no pitch rows")
     df = pd.DataFrame(index=raw.index)
 
     for src, dst in C.TEXT_COLUMNS.items():
         df[dst] = raw[src].str.strip() if src in raw else None
     for src, dst in C.INT_COLUMNS.items():
-        df[dst] = pd.to_numeric(raw.get(src), errors="coerce").astype("Int64") if src in raw else pd.NA
+        df[dst] = pd.to_numeric(raw[src], errors="coerce").astype("Int64") if src in raw else pd.NA
     for src, dst in C.FLOAT_COLUMNS.items():
-        df[dst] = pd.to_numeric(raw.get(src), errors="coerce") if src in raw else np.nan
+        df[dst] = pd.to_numeric(raw[src], errors="coerce") if src in raw else np.nan
 
     df["p_throws"] = raw["PitcherThrows"].map(_hand)
     df["b_side"] = raw["BatterSide"].map(_hand)
 
     # Game-level fields.
-    game_id = (raw.get("GameID", pd.Series([""])).dropna().iloc[0] if "GameID" in raw else "") or ""
-    gdate = _parse_date(raw["Date"].dropna().iloc[0] if raw["Date"].notna().any() else "", game_id)
+    game_id = _first(raw, "GameID") or ""
+    gdate = _game_date(raw)
     if gdate is None:
-        raise ValueError(f"{path.name}: could not read the game date")
-    game_uid = raw["GameUID"].dropna().iloc[0] if raw["GameUID"].notna().any() else game_id
+        raise ValueError("could not read the game date (Date, timestamps and GameID are all empty or unreadable)")
+    game_uid = _first(raw, "GameUID") or game_id
     if not game_uid:
-        raise ValueError(f"{path.name}: no GameUID or GameID")
-    first = lambda c: (raw[c].dropna().iloc[0] if c in raw and raw[c].notna().any() else None)  # noqa: E731
+        # Some exports drop the UID columns. Build a stable one from what identifies the game.
+        # No timestamps either: fall back to the file name so two same-day games can't merge.
+        stamp = (_first(raw, "UTCDateTime") or _first(raw, "Time") or path.stem)
+        game_uid = "gen:" + "|".join(str(x) for x in (gdate, _first(raw, "HomeTeam"), _first(raw, "AwayTeam"), stamp))
+        warnings.append("no GameUID/GameID in file; generated a game ID from date, teams and first pitch time")
     game = {
         "game_uid": game_uid,
         "game_id": game_id or None,
         "game_date": gdate,
         "season": season_for(gdate),
-        "home_team": first("HomeTeam"),
-        "away_team": first("AwayTeam"),
-        "stadium": first("Stadium"),
-        "level": first("Level"),
-        "league": first("League"),
+        "home_team": _first(raw, "HomeTeam"),
+        "away_team": _first(raw, "AwayTeam"),
+        "stadium": _first(raw, "Stadium"),
+        "level": _first(raw, "Level"),
+        "league": _first(raw, "League"),
     }
+    if df["pitch_uid"].isna().any():
+        n_missing = int(df["pitch_uid"].isna().sum())
+        seq = df["pitch_no"].astype("string").fillna(pd.Series(range(1, len(df) + 1), index=df.index).astype("string"))
+        df["pitch_uid"] = df["pitch_uid"].fillna(f"{game_uid}#" + seq)
+        warnings.append(f"{n_missing} pitches had no PitchUID; generated from game ID + pitch number")
     df["game_uid"] = df["game_uid"].fillna(game_uid)
     df["game_date"] = gdate
     df["season"] = game["season"]
@@ -123,7 +159,7 @@ def parse_file(path: str | Path, registry: Resolver | None = None) -> ParsedFile
             continue
         ff, fr = rec.from_file.get(src, 0), rec.from_registry.get(src, 0)
         lost = n - ff - fr
-        msg = f"{n} rows with a damaged {src} (e.g. '{rec.example[src]}'): {ff} recovered from this file, {fr} from the registry"
+        msg = f"{n} rows with a damaged or missing {src} (e.g. '{rec.example[src] or 'blank'}'): {ff} recovered from this file, {fr} from the registry"
         if lost:
             names = rec.unresolved.get(src, [])
             msg += f", {lost} unrecoverable ({', '.join(names[:5])}{'...' if len(names) > 5 else ''})"

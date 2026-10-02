@@ -152,10 +152,10 @@ def recover_ids(raw, season: str, registry: Resolver | None = None) -> RecoveryR
             if s == "ok":
                 out.append(v)
                 continue
-            if s == "missing":
+            if s == "missing" and not name_key(n):
                 out.append(None)
                 continue
-            dmg += 1
+            dmg += 1  # damaged, or blank with a name we can look up
             res.example.setdefault(icol, v)
             nk, tk = name_key(n), team_key(t)
             if not nk:

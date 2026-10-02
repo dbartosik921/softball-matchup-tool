@@ -89,3 +89,62 @@ def test_pitch_key(pf):
     k = pf.pitches.pitch_key.dropna()
     assert len(k) == 219 and k.is_unique
     assert k.iloc[0] == "2026-04-24T22:01:45|burnham, payton"
+
+
+def _variant(tmp_path, name, mutate):
+    import pandas as pd
+    raw = pd.read_csv(FIXTURE, dtype=str, keep_default_na=False)
+    raw = mutate(raw)
+    out = tmp_path / name
+    raw.to_csv(out, index=False)
+    return out
+
+
+def test_missing_uid_columns_generated(tmp_path):
+    f = _variant(tmp_path, "no_uids.csv", lambda r: r.drop(columns=["PitchUID", "GameUID"]))
+    pf = parse_file(f)
+    assert len(pf.pitches) == 219 and pf.pitches.pitch_uid.is_unique
+    assert pf.game["game_uid"] == "20260424-BoglePark-1"  # falls back to GameID
+    assert parse_file(f).pitches.pitch_uid.tolist() == pf.pitches.pitch_uid.tolist()  # stable
+
+
+def test_missing_uid_and_gameid_generated(tmp_path):
+    f = _variant(tmp_path, "bare.csv", lambda r: r.drop(columns=["PitchUID", "GameUID", "GameID"]))
+    pf = parse_file(f)
+    assert pf.game["game_uid"].startswith("gen:2026-04-24|UNI_ARK_SB|MIS_TIG_SB|")
+    assert any("generated a game ID" in w for w in pf.warnings)
+
+
+def test_blank_date_falls_back_to_timestamps(tmp_path):
+    def blank(r):
+        r["Date"] = ""
+        return r
+    pf = parse_file(_variant(tmp_path, "nodate.csv", blank))
+    assert str(pf.game["game_date"]) == "2026-04-24"
+
+
+def test_blank_gameid_column_is_fine(tmp_path):
+    def blank(r):
+        r["GameID"] = ""
+        return r
+    assert len(parse_file(_variant(tmp_path, "nogameid.csv", blank)).pitches) == 219
+
+
+def test_empty_and_foreign_files(tmp_path):
+    from matchup.ingest import NotTrackmanFile
+    empty = _variant(tmp_path, "empty.csv", lambda r: r.iloc[0:0])
+    with pytest.raises(ValueError, match="no pitch rows"):
+        parse_file(empty)
+    roster = tmp_path / "roster.csv"
+    roster.write_text("Name,Team\nSmith,ARK\n")
+    with pytest.raises(NotTrackmanFile):
+        parse_file(roster)
+
+
+def test_blank_ids_recovered_by_name(tmp_path):
+    def blank(r):
+        r.loc[r.Batter == "Waits, Addy", "BatterId"] = ""
+        r.loc[0, "BatterId"] = "1000000000570"  # one clean appearance left in the file
+        return r
+    pf = parse_file(_variant(tmp_path, "blankids.csv", blank))
+    assert len(pf.pitches) == 219

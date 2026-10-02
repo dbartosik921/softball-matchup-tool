@@ -17,7 +17,7 @@ import re
 import sys
 from pathlib import Path
 
-from .ingest import ParsedFile, parse_file
+from .ingest import NotTrackmanFile, ParsedFile, parse_file
 
 GAME_FILE_SUFFIXES = {".csv", ".xlsx", ".xlsm"}
 # Games per database round trip, and a cap on the JSON payload per request.
@@ -66,6 +66,7 @@ def _registry():
 def _parse_all(files: list[Path], registry, skip_hashes: set[str] = frozenset()):
     parsed: list[ParsedFile] = []
     failures: list[tuple[str, str]] = []
+    ignored: list[str] = []
     skipped = 0
     for f in files:
         if skip_hashes and hashlib.sha256(f.read_bytes()).hexdigest() in skip_hashes:
@@ -73,9 +74,11 @@ def _parse_all(files: list[Path], registry, skip_hashes: set[str] = frozenset())
             continue
         try:
             parsed.append(parse_file(f, registry))
+        except NotTrackmanFile:
+            ignored.append(f.name)
         except Exception as e:  # noqa: BLE001
-            failures.append((f.name, str(e)))
-    return parsed, failures, skipped
+            failures.append((f.name, f"{type(e).__name__}: {e}" if not isinstance(e, ValueError) else str(e)))
+    return parsed, failures, ignored, skipped
 
 
 def _warn_key(w: str) -> str:
@@ -88,7 +91,7 @@ def cmd_check(args) -> int:
 
     files = _files(args.paths)
     registry = _registry()
-    parsed, failures, _ = _parse_all(files, registry)
+    parsed, failures, ignored, _ = _parse_all(files, registry)
     keep, dups = group_within_run(parsed)
     dup_names = {d.file.file_name: d.kept.file_name for d in dups}
 
@@ -121,7 +124,8 @@ def cmd_check(args) -> int:
     usable = sum(len(pf.pitches) for pf in keep)
     print("\n" + "=" * 70)
     print(f"SUMMARY  {len(files)} files -> {len(keep)} unique games, {len(dups)} duplicate files  |  {usable:,} usable pitches")
-    print(f"         {summary['ok']} ok, {summary['warn']} with unrecoverable rows, {summary['fail']} unusable")
+    print(f"         {summary['ok']} ok, {summary['warn']} with unrecoverable rows, {summary['fail']} unusable, "
+          f"{len(ignored)} ignored (not Trackman pitch logs)")
     if warn_counts:
         print("Warnings by type (files affected):")
         for k, v in sorted(warn_counts.items(), key=lambda kv: -kv[1]):
@@ -130,6 +134,10 @@ def cmd_check(args) -> int:
         print("Duplicate files (same game; the most complete copy is kept):")
         for d in dups:
             print(f"  - {d.file.file_name}  ->  kept {d.kept.file_name}")
+    if ignored:
+        print("Ignored (not Trackman pitch logs):")
+        for name in ignored:
+            print(f"  - {name}")
     if problems:
         print("Files needing attention:")
         for name, msg in problems:
@@ -143,7 +151,9 @@ def cmd_sync(args, conn) -> int:
 
     db.migrate(conn)
     registry = _registry()
-    parsed, failures, skipped = _parse_all(_files(args.paths), registry, db.known_hashes(conn))
+    parsed, failures, ignored, skipped = _parse_all(_files(args.paths), registry, db.known_hashes(conn))
+    if ignored:
+        print(f"ignored {len(ignored)} files that aren't Trackman pitch logs: {', '.join(ignored[:10])}{'...' if len(ignored) > 10 else ''}")
     for name, msg in failures:
         print(f"! {name}: {msg}", file=sys.stderr)
 
