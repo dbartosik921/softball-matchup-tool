@@ -32,7 +32,7 @@ def conn(request):
         c._endpoint = f"http://127.0.0.1:{srv.server_port}/sql"
         request.addfinalizer(srv.shutdown)
     request.addfinalizer(c.close)
-    assert db.migrate(c) == ["001_init.sql", "002_dedup.sql"]
+    assert db.migrate(c) == ["001_init.sql", "002_dedup.sql", "003_game_type.sql"]
     return c
 
 
@@ -143,3 +143,44 @@ def test_sync_end_to_end(conn, tmp_path, capsys, monkeypatch):
     assert cli.cmd_sync(Args, conn) == 0
     out = capsys.readouterr().out
     assert "3 already loaded" in out
+
+
+def test_game_type_stored(conn, tmp_path):
+    import pandas as pd
+
+    db.load(conn, parse_file(FIXTURE))
+    raw = pd.read_csv(FIXTURE, dtype=str, keep_default_na=False)
+    raw["GameUID"] = "fall-game"
+    raw["PitchUID"] = raw["PitchUID"] + "-f"
+    raw["Date"] = "2026-09-11"
+    raw["UTCDateTime"] = raw["UTCDateTime"].str.replace("2026-04-24", "2026-09-11")
+    f = tmp_path / "Ark Live ABs 9.11.26.csv"
+    raw.to_csv(f, index=False)
+    db.load(conn, parse_file(f))
+    rows = sorted(tuple(r) for r in conn.query("select game_uid, game_type, season from games"))
+    assert rows == [("5ca95647-9a33-4467-b411-ccad8e2db357", "regular", "2025-26"), ("fall-game", "fall", "2026-27")]
+
+
+def test_sync_compilation_file_with_overlap(conn, tmp_path, monkeypatch):
+    """A season compilation file overlapping single-game files: every game once, nothing lost."""
+    import pandas as pd
+
+    from matchup import cli
+    from tests.test_dedup import reexport
+
+    folder = tmp_path / "logs"
+    folder.mkdir()
+    a = pd.read_csv(FIXTURE, dtype=str, keep_default_na=False)
+    b = pd.read_csv(reexport(tmp_path, "g2", shift_seconds=4 * 3600), dtype=str, keep_default_na=False)
+    a.to_csv(folder / "game1.csv", index=False)                       # game 1 alone
+    pd.concat([a, b]).to_csv(folder / "Season as of 3.9.26.csv", index=False)  # game 1 + game 2
+    monkeypatch.delenv("REGISTRY_DATABASE_URL", raising=False)
+
+    class Args:
+        paths = [str(folder)]
+
+    assert cli.cmd_sync(Args, conn) == 0
+    assert int(conn.query("select count(*) from games")[0][0]) == 2
+    assert int(conn.query("select count(*) from pitches")[0][0]) == 438
+    assert cli.cmd_sync(Args, conn) == 0  # second run: nothing new, nothing doubled
+    assert int(conn.query("select count(*) from pitches")[0][0]) == 438

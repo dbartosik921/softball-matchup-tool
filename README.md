@@ -75,6 +75,15 @@ file never blocks the rest.
   stored one. Skipped copies are recorded in `ingest_files` (`status = 'duplicate'`).
   `check` lists duplicates without writing anything.
 
+### What gets loaded
+
+- **Batting practice** (`BP` as its own word in the file name or GameID) is never loaded.
+- **Fall ball, live ABs and intrasquad** (games Aug-Dec, or pitcher and batter on the same team) are loaded
+  with `games.game_type = 'fall'`. Opponent matchups use `regular` games by default.
+- **Season compilation files** (many games in one file) are split into one game each, then deduplicated
+  against the single-game files.
+- **Empty exports** and non-Trackman files (scouting reports, rosters) are listed as ignored.
+
 ### Tests
 
 ```bash

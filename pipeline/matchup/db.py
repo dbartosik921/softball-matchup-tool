@@ -228,8 +228,8 @@ def _pitches_json(pf: ParsedFile) -> str:
 _COLS = ", ".join(PITCH_COLUMNS)
 LOAD_SQL = f"""
 with g as (
-  insert into games (game_uid, game_id, game_date, season, home_team, away_team, stadium, level, league)
-  values (%s, %s, %s::date, %s, %s, %s, %s, %s, %s)
+  insert into games (game_uid, game_id, game_date, season, home_team, away_team, stadium, level, league, game_type)
+  values (%s, %s, %s::date, %s, %s, %s, %s, %s, %s, %s)
   on conflict (game_uid) do nothing
   returning 1
 ), p as (
@@ -251,7 +251,7 @@ def load_statement(pf: ParsedFile, source: str = "folder") -> Statement:
     g = pf.game
     params = (
         g["game_uid"], g["game_id"], g["game_date"], g["season"], g["home_team"], g["away_team"],
-        g["stadium"], g["level"], g["league"],
+        g["stadium"], g["level"], g["league"], g["game_type"],
         _pitches_json(pf),
         pf.sha256, pf.file_name, g["game_uid"], pf.rows_read, json.dumps(pf.warnings), source,
     )

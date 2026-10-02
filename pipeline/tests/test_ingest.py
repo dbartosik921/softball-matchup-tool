@@ -148,3 +148,49 @@ def test_blank_ids_recovered_by_name(tmp_path):
         return r
     pf = parse_file(_variant(tmp_path, "blankids.csv", blank))
     assert len(pf.pitches) == 219
+
+
+@pytest.mark.parametrize("name,bp", [
+    ("20260414-BoglePark-BP-1_SB_unverified", True), ("20260824-BoglePark-BP-2_SB_unverified", True),
+    ("BP 9.12.26", True), ("Ark_BP", True),
+    ("20260424-BoglePark-1_SB", False), ("Ark Live ABs 9.11.26", False), ("BPA_Arkansas_03012026", False),
+])
+def test_batting_practice_detection(name, bp):
+    from matchup.ingest import is_batting_practice
+    assert is_batting_practice(name) == bp
+
+
+def test_bp_file_excluded(tmp_path):
+    import shutil
+    from matchup.ingest import ExcludedFile
+    f = tmp_path / "20260414-BoglePark-BP-1_SB_unverified.csv"
+    shutil.copy(FIXTURE, f)
+    with pytest.raises(ExcludedFile):
+        parse_file(f)
+
+
+def test_game_types(tmp_path):
+    assert parse_file(FIXTURE).game["game_type"] == "regular"
+    intrasquad = _variant(tmp_path, "intrasquad.csv", lambda r: r.assign(PitcherTeam="UNI_ARK_SB", BatterTeam="UNI_ARK_SB"))
+    assert parse_file(intrasquad).game["game_type"] == "fall"
+    fall = _variant(tmp_path, "fall.csv", lambda r: r.assign(Date="2026-10-03"))
+    pf = parse_file(fall)
+    assert pf.game["game_type"] == "fall" and pf.game["season"] == "2026-27"
+
+
+def test_multi_game_file_split(tmp_path):
+    import pandas as pd
+    from matchup.ingest import parse_path
+    from tests.test_dedup import reexport
+
+    a = pd.read_csv(FIXTURE, dtype=str, keep_default_na=False)
+    b = pd.read_csv(reexport(tmp_path, "g2", shift_seconds=4 * 3600), dtype=str, keep_default_na=False)
+    combo = tmp_path / "Florida Trackman Data as of 3.9.26.csv"
+    pd.concat([a, b]).to_csv(combo, index=False)
+    parts = parse_path(combo)
+    assert len(parts) == 2
+    assert {p.game["game_uid"] for p in parts} == {"5ca95647-9a33-4467-b411-ccad8e2db357", "uid-g2"}
+    assert all(len(p.pitches) == 219 for p in parts)
+    assert len({p.sha256 for p in parts}) == 2
+    with pytest.raises(ValueError, match="contains 2 games"):
+        parse_file(combo)
