@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import re
 import os
 import sys
 from pathlib import Path
@@ -54,15 +55,45 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     if args.cmd == "check":
-        bad = 0
-        for f in _files(args.paths):
+        files = _files(args.paths)
+        summary = {"ok": 0, "warn": 0, "fail": 0, "pitches": 0}
+        problems: list[tuple[str, str]] = []
+        warn_counts: dict[str, int] = {}
+        for f in files:
             try:
                 pf = parse_file(f)
-                print(f"ok   {f.name}: {len(pf.pitches)}/{pf.rows_read} pitches" + "".join(f"\n       - {w}" for w in pf.warnings))
             except Exception as e:  # noqa: BLE001
-                bad += 1
+                summary["fail"] += 1
+                problems.append((f.name, str(e)))
                 print(f"FAIL {f.name}: {e}")
-        return 1 if bad else 0
+                continue
+            n = len(pf.pitches)
+            summary["pitches"] += n
+            damaged = [w for w in pf.warnings if "damaged" in w]
+            if n == 0 or damaged:
+                status = "FAIL" if n == 0 else "WARN"
+                summary["fail" if n == 0 else "warn"] += 1
+                problems.append((f.name, f"{n}/{pf.rows_read} pitches usable; " + "; ".join(damaged or pf.warnings)))
+            else:
+                status = "ok  "
+                summary["ok"] += 1
+            for w in pf.warnings:
+                key = re.sub(r"^\d+ ", "", w.split("(")[0]).replace(" were skipped", "").strip()
+                warn_counts[key] = warn_counts.get(key, 0) + 1
+            print(f"{status} {f.name}: {n}/{pf.rows_read} pitches" + "".join(f"\n       - {w}" for w in pf.warnings))
+
+        print("\n" + "=" * 70)
+        print(f"SUMMARY  {len(files)} files: {summary['ok']} ok, {summary['warn']} with warnings, "
+              f"{summary['fail']} unusable  |  {summary['pitches']:,} usable pitches")
+        if warn_counts:
+            print("Warnings by type (files affected):")
+            for k, v in sorted(warn_counts.items(), key=lambda kv: -kv[1]):
+                print(f"  {v:>5}  {k}")
+        if problems:
+            print("Files needing attention:")
+            for name, msg in problems:
+                print(f"  - {name}: {msg}")
+        return 1 if summary["fail"] else 0
 
     from . import db
 
