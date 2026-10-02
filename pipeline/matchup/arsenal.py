@@ -65,6 +65,48 @@ def _label(m: dict, max_velo: float, tags: dict[str, float]) -> str:
     return "Fastball-type"
 
 
+_DESCRIBE = [  # feature, word when this cluster has more of it, word when less
+    ("hb_arm", "more arm-side run", "more glove-side"),
+    ("induced_vert_break", "more rise", "more drop"),
+    ("rel_speed", "harder", "softer"),
+    ("vaa_adj", "flatter", "steeper"),
+]
+
+
+def _disambiguate(clusters: list, lg) -> None:
+    """Two clusters with the same name (e.g. two riseballs) get the feature that separates them most:
+    'Riseball (more arm-side run)' / 'Riseball (more glove-side)'."""
+    by_label: dict[str, list] = {}
+    for c in clusters:
+        by_label.setdefault(c.label, []).append(c)
+    for label, group in by_label.items():
+        if len(group) < 2:
+            continue
+        def spread(f):
+            vals = [c.means[f] for c in group]
+            sd = lg.scale.get(f, {}).get("std", 1.0) if f != "hb_arm" else lg.scale.get("hb_arm", {}).get("std", 1.0)
+            return (max(vals) - min(vals)) / (sd or 1.0)
+        feat, more, less = max(_DESCRIBE, key=lambda d: spread(d[0]))
+        vals = [c.means[feat] for c in group]
+        mid = np.mean(vals)
+        # Sign-aware words: two arm-side pitches are 'more run' vs 'straighter', two glove-side pitches
+        # 'straighter' vs 'more glove-side break'; same idea for rise vs drop.
+        if feat == "hb_arm":
+            more, less = (("more arm-side run", "straighter") if min(vals) >= -1 else
+                          ("straighter", "more glove-side break") if max(vals) <= 1 else
+                          ("arm-side run", "glove-side break"))
+        if feat == "induced_vert_break":
+            more, less = (("more rise", "less rise") if min(vals) >= 0 else
+                          ("less drop", "more drop") if max(vals) <= 0 else ("rise", "drop"))
+        for c in group:
+            word = more if c.means[feat] >= mid else less
+            c.label = f"{label} ({word})"
+        names = [c.label for c in group]
+        for i, c in enumerate(group):  # 3+ of a kind can still collide
+            if names.count(c.label) > 1:
+                c.label = f"{c.label} {i + 1}"
+
+
 def fit_arsenal(pitches: pd.DataFrame, lg, weights: np.ndarray | None = None, seed: int = 0) -> Arsenal:
     """pitches: every pitch by one pitcher (any game type); lg: calibrate.League."""
     if pitches["pitcher_tm_id"].nunique() != 1:
@@ -105,6 +147,7 @@ def fit_arsenal(pitches: pd.DataFrame, lg, weights: np.ndarray | None = None, se
         tags = g["tagged_pitch_type"].where(~g["tagged_pitch_type"].isin(IGNORE_TAGS)).value_counts(normalize=True)
         clusters.append(Cluster(int(cid), _label(m, max_velo, tags.to_dict()), len(g), len(g) / len(t), usage, m,
                                 {str(k): round(float(v), 3) for k, v in tags.head(3).items()}))
+    _disambiguate(clusters, lg)
     first = pitches.iloc[0]
     return Arsenal(str(first["pitcher_tm_id"]), str(first["pitcher_name"]), first.get("pitcher_team"),
                    str(first["p_throws"]), len(t), clusters, t)

@@ -24,7 +24,9 @@ from . import shape
 from .arsenal import Arsenal
 from .recency import recency_weights
 
-BANDWIDTH = 0.15         # added to the cluster covariance (standardized units): how far 'similar' reaches
+BANDWIDTH = 0.3          # added to the cluster covariance (standardized units): how far 'similar' reaches.
+                         # Chosen on a synthetic league with realistic pitcher-to-pitcher variation (purity vs
+                         # sample size); the backtest tunes it on real data.
 MIN_WEIGHT = 0.01        # pitches less typical than this (chi-square tail) get no weight
 REFERENCE_MIN_PITCHES = 150
 

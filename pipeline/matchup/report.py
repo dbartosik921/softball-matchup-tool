@@ -149,7 +149,8 @@ def render(res: Result, team: str, lineup: list[str], slot_pa: np.ndarray, lg, d
             f"<td>{100 * c.usage.get('L', 0):.0f}%</td><td>{100 * c.usage.get('R', 0):.0f}%</td>"
             f"<td>{100 * c.usage.get('L2K', 0):.0f}%</td><td>{100 * c.usage.get('R2K', 0):.0f}%</td>"
             f"<td>{m['rel_speed']:.1f}</td><td>{m['induced_vert_break']:+.1f}</td><td>{m['hb_arm']:+.1f}</td>"
-            f"<td>{m['spin_rate']:.0f}</td><td>{m['vaa_adj']:.1f}</td><td>{m['rel_height']:.2f}</td><td>{c.n}</td></tr>")
+            f"<td>{m['spin_rate']:.0f}</td><td>{m['vaa_adj']:.1f}</td><td>{m['rel_height']:.2f}</td><td>{c.n}</td>"
+            f"<td class='l note'>{html.escape(', '.join(f'{k} {100 * v:.0f}%' for k, v in c.tag_mix.items()) or 'untagged')}</td></tr>")
 
     head = ("<tr><th class='l'>#</th><th class='l'>Batter</th><th class='l'>Bats</th><th>Pitcher adv.</th><th>xRV/100</th>"
             + "".join(f"<th>{COLS[m][0]}</th>" for m in COLS)
@@ -179,9 +180,10 @@ def render(res: Result, team: str, lineup: list[str], slot_pa: np.ndarray, lg, d
 
 <h2>Her arsenal (movement clusters)</h2>
 <div class="wrap"><table><tr><th class="l">Pitch</th><th>Overall</th><th>vs LHH</th><th>vs RHH</th><th>vs LHH 2K</th><th>vs RHH 2K</th>
-<th>Velo</th><th>IVB (in)</th><th>Arm-side HB (in)</th><th>Spin</th><th>VAA adj.</th><th>Rel. ht</th><th>n</th></tr>
+<th>Velo</th><th>IVB (in)</th><th>Arm-side HB (in)</th><th>Spin</th><th>VAA adj.</th><th>Rel. ht</th><th>n</th><th class="l">Tagged as</th></tr>
 {"".join(ars_rows)}</table></div>
-<p class="note">Clusters are found from movement (velo, induced vertical break, arm-side break, location-adjusted approach angle), not pitch tags.
+<p class="note">Clusters are found from movement (velo, induced vertical break, arm-side break, location-adjusted approach angle), not pitch tags;
+a cluster is named after its tag only when at least half its pitches carry that tag ("Tagged as" shows the mix).
 Positive arm-side break = toward her arm side. Usage is recency-weighted.</p>
 
 <h2>By pitch type</h2>

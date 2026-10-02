@@ -265,6 +265,12 @@ def cmd_model(args, conn) -> int:
     a = r.result.arsenal
     print(f"{a.pitcher_name} ({a.throws}HP): {a.n_pitches} tracked pitches, "
           + ", ".join(f"{c.label} {100 * c.share:.0f}%" for c in a.clusters))
+    pop = r.result.population
+    pop = pop[pop["split"] == "all"]
+    print("similar league pitches per pitch type (vs LHH / vs RHH):")
+    for c in a.clusters:
+        n = {sd: pop[(pop["cluster"] == c.cid) & (pop["side"] == sd)]["sim_pitches"].sum() for sd in ("L", "R")}
+        print(f"  {c.label:<34}{n['L']:>9,.0f} / {n['R']:,.0f}")
     b = r.result.batters.sort_values("score", ascending=False)
     print(f"{'Batter':<26}{'Bats':<5}{'Adv':>5}{'xRV/100':>9}{'Whiff':>7}{'Chase':>7}{'Hard':>7}  Sample")
     for _, x in b.iterrows():

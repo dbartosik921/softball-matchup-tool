@@ -41,8 +41,12 @@ def _roster(rng):
             if team == "UNI_ARK_SB" and k == 0:
                 name, kinds = "Burnham, Payton", ["Riseball", "Dropball", "Changeup"]
             usage = rng.dirichlet(np.ones(3) * 4)
-            offsets = {kd: rng.normal(0, [1.0, 0.8, 0.8]) for kd in kinds}
-            pitchers.append(dict(id=str(pid), name=name, team=team, hand=hand, kinds=kinds, usage=usage, offsets=offsets))
+            # Real pitchers differ a lot more between each other than within themselves: arm speed shifts
+            # every pitch, and release height/side vary pitcher to pitcher.
+            arm = rng.normal(0, 2.5)
+            offsets = {kd: rng.normal(0, [1.0, 1.2, 1.2]) + np.array([arm, 0, 0]) for kd in kinds}
+            pitchers.append(dict(id=str(pid), name=name, team=team, hand=hand, kinds=kinds, usage=usage, offsets=offsets,
+                                 rel_h=1.8 + rng.normal(0, 0.15), rel_s=max(0.2, 0.6 + rng.normal(0, 0.15))))
         for k in range(10):
             pid += 1
             side = "S" if k == 8 else ("L" if k in (0, 3, 6, 7) else "R")
@@ -127,10 +131,10 @@ def _pa(rng, p, b, side):
         side_loc = rng.normal(0, 0.45 if in_target else 0.95)
         height = rng.normal(2.25, 0.4 if in_target else 0.9)
         in_zone = abs(side_loc) <= 0.71 and 1.5 <= height <= 3.0
-        rel_side = 0.6 * p_sign + rng.normal(0, 0.08)
+        rel_side = p["rel_s"] * p_sign + rng.normal(0, 0.05)
         row = dict(
             tagged_pitch_type=kind, balls=balls, strikes=strikes,
-            rel_speed=velo, spin_rate=spin + rng.normal(0, 60), rel_height=1.8 + rng.normal(0, 0.08),
+            rel_speed=velo, spin_rate=spin + rng.normal(0, 60), rel_height=p["rel_h"] + rng.normal(0, 0.05),
             rel_side=rel_side, extension=5.3, induced_vert_break=ivb, horz_break=hb_arm * p_sign,
             plate_loc_height=height, plate_loc_side=side_loc,
             vert_appr_angle=-6.0 + 0.25 * ivb + 1.1 * (height - 2.25) + rng.normal(0, 0.3),

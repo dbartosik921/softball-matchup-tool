@@ -15,8 +15,10 @@ ZONE_MID_HEIGHT = 2.25
 CLUSTER_FEATURES = ["rel_speed", "induced_vert_break", "hb_arm", "vaa_adj"]
 # Batter-relative: what the batter actually sees. Location is deliberately excluded (shape only).
 SIMILARITY_FEATURES = ["rel_speed", "induced_vert_break", "hb_in", "rel_height", "rel_side_in", "vaa_adj"]
+# Release position differs a lot between pitchers and mostly matters through the approach angle it creates
+# (already a feature), so it gets a small weight; at 0.5 it excluded nearly every other pitcher's pitches.
 SIMILARITY_WEIGHTS = {"rel_speed": 1.0, "induced_vert_break": 1.0, "hb_in": 1.0,
-                      "rel_height": 0.5, "rel_side_in": 0.5, "vaa_adj": 0.75}
+                      "rel_height": 0.1, "rel_side_in": 0.1, "vaa_adj": 0.75}
 
 
 def fit_vaa_slope(p: pd.DataFrame) -> float:
