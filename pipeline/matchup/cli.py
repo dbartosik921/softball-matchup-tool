@@ -304,6 +304,14 @@ def cmd_model(args, conn) -> int:
     regular = df[df["game_type"].fillna("regular") == "regular"]
     print("calibrating league...")
     lg, hist = calibrate(regular)
+    if args.cmd == "publish":
+        import os
+        from .publish import publish
+        home = args.home or os.environ.get("HOME_TEAM")
+        if not home:
+            raise SystemExit("Which team is home? Use --home TEAM_CODE (or HOME_TEAM=... in pipeline/.env).")
+        publish(conn, df, lg, hist, home, min_pitches=args.min_pitches, opponents=not args.no_opponents)
+        return 0
     if args.cmd == "league":
         print(describe(lg))
         out = Path(__file__).resolve().parents[1] / ".cache" / "league.json"
@@ -353,6 +361,11 @@ def main(argv: list[str] | None = None) -> int:
     mp.add_argument("--team", required=True, help="opponent team code, e.g. AUB_TIG_SB")
     mp.add_argument("--refresh", action="store_true")
     mp.add_argument("--no-open", action="store_true", help="don't open the report in the browser")
+    pp = sub.add_parser("publish", help="precompute matchups for the dashboard and write them to Neon")
+    pp.add_argument("--home", help="your team code (default: HOME_TEAM in .env)")
+    pp.add_argument("--min-pitches", type=int, default=150, help="opponent pitchers need this many tracked pitches")
+    pp.add_argument("--no-opponents", action="store_true", help="only your own pitchers (fast)")
+    pp.add_argument("--refresh", action="store_true")
     bp = sub.add_parser("backtest")
     bp.add_argument("--pitchers", type=int, default=60, help="pitchers to test (most pitches after the split first)")
     bp.add_argument("--split", help="split date YYYY-MM-DD (default: 60%% of the season before it)")
@@ -373,7 +386,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"connected via {conn.transport}")
             print("applied: " + (", ".join(applied) or "nothing (up to date)"))
             return 0
-        if args.cmd in ("league", "matchup"):
+        if args.cmd in ("league", "matchup", "publish"):
             return cmd_model(args, conn)
         if args.cmd == "backtest":
             return cmd_backtest(args, conn)

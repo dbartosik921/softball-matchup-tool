@@ -14,3 +14,5 @@ node_modules/
 # Generated reports contain player data
 pipeline/reports/
 pipeline/.cache/
+*.tsbuildinfo
+next-env.d.ts

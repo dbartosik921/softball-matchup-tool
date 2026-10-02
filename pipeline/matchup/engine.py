@@ -164,6 +164,13 @@ class Context:
         rec = recency_weights(h["game_date"], h["season"], self.as_of, self.season)
         self.hist = h.assign(_r=rec / rec.max() if rec.max() > 0 else rec)
 
+    def batter(self, bid: str) -> pd.DataFrame:
+        """All of one batter's pitches (indexed once: publish evaluates thousands of batters)."""
+        if not hasattr(self, "_by_batter"):
+            self._by_batter = self.hist.groupby("batter_tm_id").indices
+        idx = self._by_batter.get(bid)
+        return self.hist.iloc[idx] if idx is not None else self.hist.iloc[:0]
+
     def side(self, hand: str, side: str) -> SideData:
         key = (hand, side)
         if key in self._sides:
@@ -268,10 +275,10 @@ def evaluate(hist: pd.DataFrame, arsenal: Arsenal, lg, batter_ids: list[str],
     ref = np.concatenate(ref_xrv) if ref_xrv else np.array([])
 
     rows = []
-    hist = ctx.hist
+    by_bs = detail.groupby(["batter_tm_id", "side"]).indices if len(detail) else {}
     for bid in batter_ids:
-        side = batter_side_vs(hist, bid, p_hand)
-        h = hist[hist["batter_tm_id"] == bid]
+        h = ctx.batter(bid)
+        side = batter_side_vs(h, bid, p_hand)
         info = {"batter_tm_id": bid, "batter_name": h["batter_name"].iloc[-1] if len(h) else None,
                 "batter_team": h["batter_team"].iloc[-1] if len(h) else None, "side": side,
                 "pitches_vs_hand": int((h["p_throws"] == p_hand).sum())}
@@ -280,7 +287,8 @@ def evaluate(hist: pd.DataFrame, arsenal: Arsenal, lg, batter_ids: list[str],
         vc = direct["pa_result"].value_counts()
         info["direct_line"] = (f"{int(vc[vc.index.isin(list(_HITS))].sum())} H, {int(vc.get('K', 0))} K, "
                                f"{int(vc.get('BB', 0) + vc.get('HBP', 0))} BB/HBP") if len(direct) else ""
-        d = detail[(detail["batter_tm_id"] == bid) & (detail["side"] == side)] if side and len(detail) else pd.DataFrame()
+        di = by_bs.get((bid, side)) if side else None
+        d = detail.iloc[di] if di is not None else pd.DataFrame()
         for split, suffix in (("all", ""), ("2k", "_2k")):
             ds = d[d["split"] == split] if len(d) else d
             if not len(ds) or ds["usage"].sum() == 0:

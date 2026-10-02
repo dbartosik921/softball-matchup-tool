@@ -89,6 +89,17 @@ How the numbers are built (`matchup/engine.py`):
    **only the outcomes the backtest validated** (read from `settings.json`; whiff + hard hit until a backtest
    has been saved). Negative = she handles these shapes worse than usual. Hidden if nothing validated.
 
+### Publishing to the dashboard
+
+```bash
+python -m matchup publish --home YOUR_TEAM_CODE        # or set HOME_TEAM in pipeline/.env
+python -m matchup publish --no-opponents               # only your own staff (fast)
+```
+
+Precomputes every home pitcher vs every hitter in the latest season, and every opponent pitcher (150+ tracked
+pitches) vs your hitters, then writes them to the `pub_*` tables. The site (`web/`) always shows the latest
+complete publish; re-run after each `sync`. The team code accepts a unique fragment (`--home ARK`).
+
 ### Backtest (validation)
 
 ```bash
@@ -158,5 +169,5 @@ registry's `player_source_ids` (source `trackman`).
 3. Pitcher arsenal clustering; batter similarity lookup with recency weighting and shrinkage
 4. Matchup tables: overall score, whiff %, chase %, called strike %, hard hit %, OPS (all counts and two strikes)
 5. Validation: first-half / second-half backtest against baselines
-6. Dashboard: pitcher vs batter, pitcher vs team (lineup weighted by expected PA)
+6. ~~Dashboard: pitcher vs batter, pitcher vs team (lineup weighted by expected PA)~~ (`web/`, Vercel)
 7. Upload page on the dashboard (in addition to folder sync)

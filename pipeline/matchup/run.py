@@ -56,20 +56,25 @@ def check_team(df: pd.DataFrame, team: str) -> str:
     raise SystemExit(f"No team '{team}' in the data." + (f" Did you mean: {', '.join(close)}?" if close else ""))
 
 
+def build_arsenal(df_all: pd.DataFrame, pid: str, lg: League, mine: pd.DataFrame | None = None):
+    """Her arsenal: every tracked pitch she has thrown (fall included: it's her most current arsenal),
+    with recency-weighted usage. Shape features use the league calibration."""
+    from . import shape
+    mine = df_all[df_all["pitcher_tm_id"] == pid] if mine is None else mine
+    mine = shape.add_shape(mine, lg.vaa_slope)
+    as_of = max(mine["game_date"])
+    season = mine.loc[mine["game_date"] == as_of, "season"].iloc[0]
+    w = recency_weights(mine["game_date"], mine["season"], as_of, season)
+    return fit_arsenal(mine, lg, weights=w / w.max() if w.max() > 0 else w)
+
+
 def run(df_all: pd.DataFrame, pitcher: str, team: str, league: tuple[League, pd.DataFrame] | None = None) -> MatchupRun:
     regular = df_all[df_all["game_type"].fillna("regular") == "regular"]
     lg, hist = league or calibrate(regular)
     pid, pname = find_pitcher(df_all, pitcher)
     team = check_team(regular, team)
 
-    # Her arsenal: every tracked pitch she has thrown (fall included: it's her most current arsenal),
-    # with recency-weighted usage. Shape features use the league calibration.
-    from . import shape
-    mine = shape.add_shape(df_all[df_all["pitcher_tm_id"] == pid], lg.vaa_slope)
-    as_of = max(mine["game_date"])
-    season = mine.loc[mine["game_date"] == as_of, "season"].iloc[0]
-    w = recency_weights(mine["game_date"], mine["season"], as_of, season)
-    arsenal = fit_arsenal(mine, lg, weights=w / w.max() if w.max() > 0 else w)
+    arsenal = build_arsenal(df_all, pid, lg)
 
     roster = L.roster(hist, team)
     lineup, _ = L.latest_lineup(hist[hist["season"] == L.team_season(hist, team)], team)
