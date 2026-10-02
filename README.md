@@ -52,8 +52,15 @@ python -m matchup migrate                             # create / upgrade tables
 python -m matchup sync  ~/path/to/Trackman            # load every new game file (re-running is safe)
 ```
 
+**Connection:** for Neon (`*.neon.tech`) the pipeline talks to the database over HTTPS (port 443), the
+same protocol as Neon's serverless driver, because many campus networks block Postgres's port 5432.
+Other hosts (local Postgres, CI) use a normal connection. Force either with `DB_TRANSPORT=http` or
+`DB_TRANSPORT=tcp` in `.env`.
+
 `sync` walks the folder recursively, accepts `.csv`, `.xlsx` and `.xlsm`, and skips any file it has
-already loaded (by file hash) and any pitch already stored (by `PitchUID`).
+already loaded (by file hash) and any pitch already stored (by `PitchUID`). Games are sent 20 per
+round trip; each game is written atomically, and a failing batch is retried file by file so one bad
+file never blocks the rest.
 
 ### Tests
 

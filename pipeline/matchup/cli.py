@@ -16,6 +16,9 @@ from pathlib import Path
 from .ingest import parse_file
 
 GAME_FILE_SUFFIXES = {".csv", ".xlsx", ".xlsm"}
+# Games per database round trip. Raw CSV size is a rough proxy for the JSON payload size.
+BATCH_GAMES = 20
+BATCH_BYTES = 6_000_000
 
 
 def _load_env():
@@ -63,29 +66,62 @@ def main(argv: list[str] | None = None) -> int:
 
     from . import db
 
-    with db.connect() as conn:
+    conn = db.connect()
+    try:
         if args.cmd == "migrate":
             applied = db.migrate(conn)
+            print(f"connected via {conn.transport}")
             print("applied: " + (", ".join(applied) or "nothing (up to date)"))
             return 0
 
         db.migrate(conn)
         seen = db.known_hashes(conn)
-        new_games = skipped = failed = 0
+        stats = {"loaded": 0, "skipped": 0, "failed": 0, "pitches": 0}
+        pending: list = []
+        pending_bytes = 0
+
+        def report(pf, n):
+            stats["loaded"] += 1
+            stats["pitches"] += n
+            print(f"+ {pf.file_name}: {n} pitches" + "".join(f"\n    - {w}" for w in pf.warnings))
+
+        def flush():
+            nonlocal pending, pending_bytes
+            if not pending:
+                return
+            try:
+                for pf, n in zip(pending, db.load_many(conn, pending)):
+                    report(pf, n)
+            except Exception:  # noqa: BLE001 - retry one by one to find the bad file
+                for pf in pending:
+                    try:
+                        report(pf, db.load(conn, pf))
+                    except Exception as e:  # noqa: BLE001
+                        stats["failed"] += 1
+                        print(f"! {pf.file_name}: {e}", file=sys.stderr)
+            pending, pending_bytes = [], 0
+
         for f in _files(args.paths):
-            if hashlib.sha256(f.read_bytes()).hexdigest() in seen:
-                skipped += 1
+            data = f.read_bytes()
+            if hashlib.sha256(data).hexdigest() in seen:
+                stats["skipped"] += 1
                 continue
             try:
                 pf = parse_file(f)
-                n = db.load(conn, pf, source="folder")
-                new_games += 1
-                print(f"+ {f.name}: {n} pitches" + "".join(f"\n    - {w}" for w in pf.warnings))
             except Exception as e:  # noqa: BLE001
-                failed += 1
+                stats["failed"] += 1
                 print(f"! {f.name}: {e}", file=sys.stderr)
-        print(f"done: {new_games} loaded, {skipped} already loaded, {failed} failed")
-        return 1 if failed else 0
+                continue
+            pending.append(pf)
+            pending_bytes += len(data)
+            if len(pending) >= BATCH_GAMES or pending_bytes >= BATCH_BYTES:
+                flush()
+        flush()
+        print(f"done: {stats['loaded']} games loaded ({stats['pitches']} pitches), "
+              f"{stats['skipped']} already loaded, {stats['failed']} failed")
+        return 1 if stats["failed"] else 0
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":
