@@ -12,6 +12,7 @@ DEFAULTS = {"bandwidth": 0.3, "half_life_days": 60.0, "prior_scale": 1.0}
 
 def apply(values: dict) -> dict:
     v = {**DEFAULTS, **values}
+    engine.FIT_COMPONENTS = ("whiff", "hard_hit")
     engine.BANDWIDTH = float(v["bandwidth"])
     recency.HALF_LIFE_DAYS = float(v["half_life_days"])   # 'inf' -> no decay within the season
     ps = v["prior_scale"]
@@ -19,10 +20,17 @@ def apply(values: dict) -> dict:
     return v
 
 
+FIT_CANDIDATES = ("whiff", "called_strike", "chase", "hard_hit")
+
+
 def load() -> dict:
     """Apply saved settings (or defaults). Returns what is in effect."""
     saved = json.loads(PATH.read_text()) if PATH.exists() else {}
-    return apply({k: saved[k] for k in DEFAULTS if k in saved})
+    v = apply({k: saved[k] for k in DEFAULTS if k in saved})
+    verdicts = saved.get("validation", {})
+    if verdicts:   # Shape fit uses exactly the components whose hitter-specific part was validated
+        engine.FIT_COMPONENTS = tuple(m for m in FIT_CANDIDATES if str(verdicts.get(m, "")).startswith("validated"))
+    return v
 
 
 def save(values: dict, validation: dict | None = None) -> Path:

@@ -84,6 +84,10 @@ How the numbers are built (`matchup/engine.py`):
 4. **Shrinkage**: rates are pulled toward how all same-side hitters did against that shape, shifted by the
    hitter's own overall skill vs that hand. Prior strengths live in `engine.METRICS`.
 5. **Pitcher advantage** = expected runs per 100 pitches vs her arsenal, as a percentile among qualified hitters.
+6. **Shape fit** = the matchup without the talent: for each pitch type, (hitter's shrunk rate − what her overall
+   level predicts) × how often that outcome can happen × its run value (`calibrate.event_values`), summed over
+   **only the outcomes the backtest validated** (read from `settings.json`; whiff + hard hit until a backtest
+   has been saved). Negative = she handles these shapes worse than usual. Hidden if nothing validated.
 
 ### Backtest (validation)
 

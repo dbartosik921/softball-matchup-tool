@@ -154,3 +154,41 @@ def test_coerce_http_text():
     assert c.balls.iloc[0] == 1 and c.rel_speed.iloc[0] == 64.5
     assert c.is_swing.iloc[0] is True or c.is_swing.iloc[0] == True  # noqa: E712
     assert pd.isna(c.in_zone.iloc[0]) and c.pitch_tracked.iloc[0] == False  # noqa: E712
+
+
+def test_shape_fit_uses_only_validated_components(league, burnham, tmp_path, monkeypatch):
+    import json
+    from matchup import engine, report, settings
+    df, lg, hist = league
+    a, _ = burnham
+    aub = sorted(hist[hist.batter_team == "AUB_TIG_SB"].batter_tm_id.unique())
+    path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings, "PATH", path)
+    from matchup import recency
+    keep = (engine.FIT_COMPONENTS, engine.BANDWIDTH, engine.PRIOR_SCALE, recency.HALF_LIFE_DAYS)
+    try:
+        verdicts = {"whiff": "validated: hitter-vs-shape history adds value",
+                    "called_strike": "validated: hitter-vs-shape history adds value",
+                    "chase": "no proven edge over the hitter's overall rate",
+                    "hard_hit": "pitch shape adds value; hitter-specific part unproven"}
+        path.write_text(json.dumps({**settings.DEFAULTS, "validation": verdicts}))
+        settings.load()
+        assert engine.FIT_COMPONENTS == ("whiff", "called_strike")
+        assert "whiff + called strike" in report._fit_cell(-0.5)
+        whiff_cs = evaluate(hist, a, lg, aub).batters.set_index("batter_name")["fit100"]
+
+        verdicts["hard_hit"] = verdicts["whiff"]
+        path.write_text(json.dumps({**settings.DEFAULTS, "validation": verdicts}))
+        settings.load()
+        assert engine.FIT_COMPONENTS == ("whiff", "called_strike", "hard_hit")
+        with_hh = evaluate(hist, a, lg, aub).batters.set_index("batter_name")["fit100"]
+        # The drop masher's edge is hard contact: adding hard-hit makes her fit more hitter-friendly.
+        assert with_hh["Masher, Drop"] > whiff_cs["Masher, Drop"]
+
+        path.write_text(json.dumps({**settings.DEFAULTS, "validation": {k: "mostly noise" for k in verdicts}}))
+        settings.load()
+        assert engine.FIT_COMPONENTS == ()
+        assert evaluate(hist, a, lg, aub).batters["fit100"].isna().all()
+        assert "No outcome passed" in report._fit_cell(np.nan)
+    finally:
+        engine.FIT_COMPONENTS, engine.BANDWIDTH, engine.PRIOR_SCALE, recency.HALF_LIFE_DAYS = keep

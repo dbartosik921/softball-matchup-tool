@@ -29,6 +29,7 @@ class League:
     baselines: dict[str, dict[str, float]] = field(default_factory=dict)
     n_pitches: int = 0
     n_games: int = 0
+    event_values: dict[str, float] = field(default_factory=dict)   # runs per event swap (see event_values())
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=2, default=float)
@@ -53,6 +54,26 @@ def rates(df: pd.DataFrame, hard_hit: float, w: np.ndarray | None = None) -> dic
     }
 
 
+def event_values(df: pd.DataFrame, hard_hit: float) -> dict[str, float]:
+    """What each outcome swap is worth in runs (batter's view), from the league's own pitch run values.
+    Used to turn a hitter's validated deviations (e.g. +5% whiff vs these shapes) into runs.
+      whiff          a whiff instead of an average swing outcome
+      called_strike  a called strike instead of a called ball
+      chase          a swing at a pitch outside the zone instead of taking it
+      hard_hit       a hard-hit ball in play instead of a softer one"""
+    rv = df["rv"].fillna(0)
+    oz = (df["in_zone"] == False).fillna(False)  # noqa: E712
+    take = ~df["is_swing"]
+    hard = df["bip_ev_valid"] & (df["exit_speed"].fillna(0) >= hard_hit)
+    m = lambda mask: float(rv[mask].mean()) if mask.any() else 0.0  # noqa: E731
+    return {
+        "whiff": m(df["is_whiff"]) - m(df["is_swing"]),
+        "called_strike": m(df["is_called_strike"]) - m(take & (df["pitch_call"] == "BallCalled")),
+        "chase": m(df["is_swing"] & oz) - m(take & oz),
+        "hard_hit": m(hard) - m(df["bip_ev_valid"] & ~hard),
+    }
+
+
 def calibrate(df: pd.DataFrame) -> tuple[League, pd.DataFrame]:
     """Returns the League constants and the frame with rv and vaa_adj/rel_side_in added."""
     df = df.copy()
@@ -66,6 +87,7 @@ def calibrate(df: pd.DataFrame) -> tuple[League, pd.DataFrame]:
         hard_hit_mph=hh, vaa_slope=slope, scale=shape.league_scale(df),
         n_pitches=len(df), n_games=int(df["game_uid"].nunique()),
     )
+    lg.event_values = event_values(df, hh)
     for (ph, bs), g in df.groupby(["p_throws", "b_side"]):
         lg.baselines[f"{ph}HP vs {bs}HH"] = rates(g, hh)
         lg.baselines[f"{ph}HP vs {bs}HH, 2 strikes"] = rates(g[g["is_two_strike"]], hh)
@@ -86,6 +108,7 @@ def describe(lg: League) -> str:
     lines += [
         f"Hard-hit threshold: {lg.hard_hit_mph:.1f} mph exit velo (top {100 * (1 - HARD_HIT_QUANTILE):.0f}% of tracked balls in play)",
         f"VAA location slope: {lg.vaa_slope:.2f} deg per ft of plate height",
+        "Event values (runs, batter's view): " + "  ".join(f"{k} {v:+.3f}" for k, v in lg.event_values.items()),
         "Baselines            pitches  whiff%  chase%  called-K%  hard-hit%  RV/100",
     ]
     for k, r in lg.baselines.items():

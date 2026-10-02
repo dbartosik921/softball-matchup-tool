@@ -34,6 +34,11 @@ BANDWIDTH = 0.3          # added to the cluster covariance (standardized units):
 MIN_WEIGHT = 0.01        # pitches less typical than this (chi-square tail) get no weight
 REFERENCE_MIN_PITCHES = 150
 PRIOR_SCALE: dict[str, float] | float = 1.0   # multiplies prior strengths; per metric after backtest tuning
+# Shape fit is built only from components whose hitter-specific part the backtest validated
+# (settings.load() sets this from the saved verdicts). Default before any backtest: whiff + hard-hit.
+FIT_COMPONENTS: tuple[str, ...] = ("whiff", "hard_hit")
+# metric -> exposure (share of pitches the rate applies to)
+_EXPOSURE = {"whiff": "sw", "called_strike": "n", "chase": "oz", "hard_hit": "bip"}
 
 # metric: (numerator, denominator, prior strength in denominator units)
 METRICS = {
@@ -182,6 +187,18 @@ class Context:
         return sd
 
 
+def shape_fit(row: dict, exposure: dict, lg) -> float:
+    """Runs per 100 pitches: the hitter's own deviation from her prior (shape + overall skill) on each
+    validated component, times how often that component comes up vs this pitch shape, times what the
+    event is worth. Positive = better for the hitter."""
+    ev = getattr(lg, "event_values", {}) or {}
+    total = 0.0
+    for m in FIT_COMPONENTS:
+        if m in ev and m in exposure:
+            total += (row[m] - row[f"prior_{m}"]) * exposure[m] * ev[m]
+    return 100 * total if FIT_COMPONENTS else float("nan")
+
+
 def batter_side_vs(hist: pd.DataFrame, batter_id: str, p_hand: str) -> str | None:
     h = hist[hist["batter_tm_id"] == batter_id]
     v = h[h["p_throws"] == p_hand]["b_side"]
@@ -219,7 +236,9 @@ def evaluate(hist: pd.DataFrame, arsenal: Arsenal, lg, batter_ids: list[str],
                 w = kernel(sd.X, Xc) * sd.r * smask
                 S = np.column_stack([np.bincount(sd.codes, weights=w * sd.ind[:, j], minlength=nb)
                                      for j in range(sd.ind.shape[1])])
-                pop_r = {m: v[0] for m, v in _rates(S.sum(0)).items()}
+                tot = S.sum(0)
+                pop_r = {m: v[0] for m, v in _rates(tot).items()}
+                expo = {m: (tot[IDX[col]] / tot[IDX["n"]] if tot[IDX["n"]] > 0 else 0.0) for m, col in _EXPOSURE.items()}
                 pop_rows.append({"side": side, "split": split, "cluster": c.cid, "label": c.label,
                                  "sim_pitches": float(S[:, 0].sum()), **pop_r})
                 prior = _clip_prior({m: pop_r[m] + sd.skill[m] for m in METRICS})
@@ -237,6 +256,7 @@ def evaluate(hist: pd.DataFrame, arsenal: Arsenal, lg, batter_ids: list[str],
                     row["base_rv"] = float(prior["rv"][i])  # expected rv vs this shape from overall skill alone
                     row.update({f"prior_{m}": float(prior[m][i]) for m in METRICS})
                     row.update({f"bat_{m}": float(sd.overall[m][i]) for m in METRICS})
+                    row["fit100"] = shape_fit(row, expo, lg)
                     detail_rows.append(row)
         qualified = sd.counts >= REFERENCE_MIN_PITCHES
         ref_xrv.append(xrv["all"][qualified])
@@ -274,9 +294,9 @@ def evaluate(hist: pd.DataFrame, arsenal: Arsenal, lg, batter_ids: list[str],
                 info[m + suffix] = float((u * ds[m]).sum())
                 info["pop_" + m + suffix] = float((u * ds["pop_" + m]).sum())
             info["sim_pitches" + suffix] = float((u * ds["sim_pitches"]).sum())
-            # Pitch-shape fit: how she does vs pitches shaped like these, relative to what her overall level
-            # vs this hand predicts. Separates 'good hitter' from 'good matchup'. Runs per 100 pitches.
-            info["fit100" + suffix] = float((u * (ds["rv"] - ds["base_rv"])).sum() * 100)
+            # Shape fit: the hitter-specific part of the validated components, in runs per 100 pitches,
+            # usage-weighted across her pitch types. Separates 'good hitter' from 'good matchup'.
+            info["fit100" + suffix] = float((u * ds["fit100"]).sum()) if FIT_COMPONENTS else np.nan
         x = xrv_of.get((bid, side), (np.nan, np.nan))
         info["xrv100"], info["xrv100_2k"] = float(x[0]), float(x[1])
         if len(ref) and np.isfinite(info["xrv100"]):

@@ -86,13 +86,25 @@ def _score_cell(s):
     return f'<td style="{style}" title="Pitcher advantage: better matchup for the pitcher than {s:.0f}% of qualified hitters"><b>{s:.0f}</b></td>'
 
 
+FIT_NAMES = {"whiff": "whiff", "called_strike": "called strike", "chase": "chase", "hard_hit": "hard hit"}
+
+
+def _fit_parts() -> str:
+    from . import engine
+    return " + ".join(FIT_NAMES.get(m, m) for m in engine.FIT_COMPONENTS)
+
+
 def _fit_cell(v):
+    parts = _fit_parts()
+    if not parts:
+        return '<td title="No outcome passed the backtest, so Shape fit is not shown">–</td>'
     if v is None or not np.isfinite(v):
         return "<td>–</td>"
-    style = _tint(v, 0.0, False, 0.6)
-    title = ("Runs per 100 pitches vs pitches shaped like hers, compared with what this hitter's overall level "
-             "predicts. Negative = handles these shapes worse than usual (good for the pitcher).")
-    return f'<td style="{style}" title="{title}">{v:+.2f}</td>'
+    style = _tint(v, 0.0, False, 0.3)
+    title = (f"Runs per 100 pitches from {parts} only (the outcomes that passed the backtest): how she does vs pitches "
+             "shaped like hers compared with what her overall level predicts. Negative = handles these shapes worse "
+             "than usual (good for the pitcher).")
+    return f'<td style="{style}" title="{html.escape(title)}">{v:+.2f}</td>'
 
 
 def _batter_rows(b: pd.DataFrame, slot_of: dict, bench: bool) -> str:
@@ -121,7 +133,7 @@ def _detail(res: Result, bid: str, name: str, side: str) -> str:
         return ""
     rows = []
     for split, title in (("all", "All counts"), ("2k", "Two strikes")):
-        rows.append(f'<tr><td class="l" colspan="9"><b>{title}</b></td></tr>')
+        rows.append(f'<tr><td class="l" colspan="10"><b>{title}</b></td></tr>')
         for _, r in d[d["split"] == split].sort_values("usage", ascending=False).iterrows():
             cells = [f'<td class="l">{html.escape(r["label"])}</td>', f"<td>{100 * r['usage']:.0f}%</td>",
                      f"<td>{r['sim_pitches']:.0f}</td>"]
@@ -129,12 +141,13 @@ def _detail(res: Result, bid: str, name: str, side: str) -> str:
                 raw = r.get("raw_" + m)
                 cells.append(_cell(r[m], r["pop_" + m], m, r["sim_pitches"],
                                    f"; her raw rate {_fmt(raw, COLS[m][3])} before shrinking"))
-            cells.append(f"<td title='runs per 100 pitches'>{_fmt(100 * r['rv'], 'rv')}</td>")
+            cells.append(_fit_cell(r.get("fit100")))
+            cells.append(f"<td title='expected runs per 100 pitches (+ favors hitter)'>{_fmt(100 * r['rv'], 'rv')}</td>")
             rows.append("<tr>" + "".join(cells) + "</tr>")
     head = "".join(f"<th>{COLS[m][0]}</th>" for m in COLS)
     return (f"<details><summary><h3 style='display:inline'>{html.escape(name)}</h3> "
             f"<span class='note'>bats {side} · by pitch type</span></summary><div class='wrap'><table>"
-            f"<tr><th class='l'>Pitch</th><th>Usage vs {side}HH</th><th>Similar pitches</th>{head}<th>RV/100</th></tr>"
+            f"<tr><th class='l'>Pitch</th><th>Usage vs {side}HH</th><th>Similar pitches</th>{head}<th>Shape fit</th><th>xRV/100</th></tr>"
             + "\n".join(rows) + "</table></div></details>")
 
 
@@ -142,11 +155,14 @@ def _validation_html() -> str:
     from . import settings
     v = settings.validation()
     names = {"whiff": "Whiff %", "chase": "Chase %", "called_strike": "Called K %", "hard_hit": "Hard-hit %",
-             "rv": "xRV / Pitcher adv. / Shape fit"}
+             "rv": "xRV / Pitcher adv."}
     if not v:
         return ('<h2>Validation</h2><p class="note">Not backtested yet: run <code>python -m matchup backtest --tune --apply</code> '
                 "to check which columns predict later games.</p>")
     items = "".join(f"<li><b>{names.get(k, k)}</b>: {html.escape(x)}</li>" for k, x in v.items())
+    parts = _fit_parts()
+    items += (f"<li><b>Shape fit</b>: built only from validated outcomes ({html.escape(parts)})</li>" if parts
+              else "<li><b>Shape fit</b>: hidden (no outcome passed the backtest)</li>")
     return ('<h2>Validation</h2><p class="note">Backtest: matchups built from earlier games, scored on later games. '
             f"Treat columns that aren't validated as context, not a prediction.</p><ul class='note'>{items}</ul>")
 
@@ -221,8 +237,9 @@ how closely it matches that cluster's shape from the hitter's side (velo, vertic
 release height and side, approach angle) and by how recent it is. <b>Rates are shrunk</b> toward how all same-side hitters did against
 that shape, adjusted for the hitter's overall skill, so a 3-for-5 sample doesn't read as a trend; hover shows the raw rate.
 <b>Pitcher adv.</b> = expected runs per 100 pitches vs her arsenal, as a percentile among qualified D1 hitters (higher = better for her);
-it mostly reflects how good the hitter is overall. <b>Shape fit</b> isolates the matchup itself: runs per 100 pitches against pitches shaped
-like hers compared with what the hitter's overall level predicts (negative / blue = she handles these shapes worse than usual).
+it mostly reflects how good the hitter is overall. <b>Shape fit</b> isolates the matchup itself: how the hitter does against pitches shaped like hers compared with what
+her overall level predicts, converted to runs per 100 pitches. It uses only the outcomes that passed the backtest
+({html.escape(_fit_parts() or "none")}), so it never rests on a column that didn't hold up (negative / blue = she handles these shapes worse than usual).
 <b>Whiff %</b> = misses per swing; <b>Chase %</b> = swings at pitches outside the zone; <b>Called K %</b> = called strikes per pitch;
 <b>Hard-hit %</b> = balls in play at {lg.hard_hit_mph:.1f}+ mph (top quarter of D1); <b>OPS*</b> = OPS on plate appearances that ended on a
 similar pitch. <b>Sample</b>: High ≥ 100, Medium 30–99, Low &lt; 30 similar pitches per pitch type.</p>
