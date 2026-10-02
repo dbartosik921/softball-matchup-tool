@@ -184,3 +184,22 @@ def test_sync_compilation_file_with_overlap(conn, tmp_path, monkeypatch):
     assert int(conn.query("select count(*) from pitches")[0][0]) == 438
     assert cli.cmd_sync(Args, conn) == 0  # second run: nothing new, nothing doubled
     assert int(conn.query("select count(*) from pitches")[0][0]) == 438
+
+
+def test_load_pitches_roundtrip(conn, tmp_path, monkeypatch):
+    """Download path used by `league` / `matchup`: paging, dtypes, cache."""
+    from matchup import data
+
+    monkeypatch.setattr(data, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(data, "PAGE", 50)             # force several pages
+    pf = parse_file(FIXTURE)
+    db.load(conn, pf)
+    df = data.load_pitches(conn, verbose=False)
+    assert len(df) == 219 and df.pitch_uid.is_unique
+    assert df.game_type.unique().tolist() == ["regular"]
+    assert df.rel_speed.dtype == float and df.is_swing.dtype == bool
+    assert int(df.is_whiff.sum()) == int(pf.pitches.is_whiff.sum())
+    assert df.in_zone.isna().sum() == 7
+    assert str(df.game_date.iloc[0]) == "2026-04-24"
+    again = data.load_pitches(conn, verbose=False)       # served from cache
+    assert len(again) == 219

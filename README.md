@@ -62,6 +62,29 @@ already loaded (by file hash) and any pitch already stored (by `PitchUID`). Game
 round trip; each game is written atomically, and a failing batch is retried file by file so one bad
 file never blocks the rest.
 
+### Matchup reports
+
+```bash
+python -m matchup league                                              # calibration summary
+python -m matchup matchup --pitcher "Burnham, Payton" --team AUB_TIG_SB  # writes + opens an HTML report
+```
+
+The first run downloads every pitch (about a minute) and caches it in `pipeline/.cache/`; later runs reuse
+the cache until new games are synced (`--refresh` forces a download). Reports go to `pipeline/reports/`
+(git-ignored: they contain player data).
+
+How the numbers are built (`matchup/engine.py`):
+
+1. **League calibration** (`calibrate.py`): run values per PA result (half-inning regression) and per count,
+   hard-hit line (top quarter of D1 exit velo), VAA-location slope, feature scales, baselines by hand matchup.
+2. **Arsenal** (`arsenal.py`): her pitches clustered on arm-relative shape (velo, IVB, arm-side break,
+   location-adjusted VAA); recency-weighted usage vs LHH / RHH, all counts and two strikes.
+3. **Similar pitches**: every pitch a hitter saw from a same-handed pitcher is weighted by how typical it would
+   be of each cluster, in the hitter's frame (break and release side toward/away from the hitter), times recency.
+4. **Shrinkage**: rates are pulled toward how all same-side hitters did against that shape, shifted by the
+   hitter's own overall skill vs that hand. Prior strengths live in `engine.METRICS`.
+5. **Pitcher advantage** = expected runs per 100 pitches vs her arsenal, as a percentile among qualified hitters.
+
 ### Damaged IDs and duplicate games
 
 - **Damaged IDs** (Excel turned `100000002415` into `1E+11`, `1.00E+11` or a rounded `100000000000`) are

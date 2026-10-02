@@ -4,6 +4,8 @@
   python -m matchup check ~/Trackman        # parse only: report problems and duplicates, write nothing
   python -m matchup sync ~/Trackman         # load every new game file (recursively)
   python -m matchup ingest a.csv b.csv      # same as sync, for specific files
+  python -m matchup league                  # league calibration: run values, hard-hit line, baselines
+  python -m matchup matchup --pitcher "Burnham, Payton" --team AUB_TIG_SB   # HTML matchup report
 
 Damaged player IDs are recovered from the player registry when REGISTRY_DATABASE_URL is set.
 The same game exported more than once is loaded once (the most complete copy).
@@ -240,6 +242,42 @@ def cmd_sync(args, conn) -> int:
     return 1 if stats["failed"] else 0
 
 
+def cmd_model(args, conn) -> int:
+    from .calibrate import calibrate, describe
+    from .data import load_pitches
+
+    df = load_pitches(conn, use_cache=not args.refresh)
+    regular = df[df["game_type"].fillna("regular") == "regular"]
+    print("calibrating league...")
+    lg, hist = calibrate(regular)
+    if args.cmd == "league":
+        print(describe(lg))
+        out = Path(__file__).resolve().parents[1] / ".cache" / "league.json"
+        out.write_text(lg.to_json())
+        print(f"saved {out}")
+        return 0
+
+    from .run import run, write
+
+    print(f"building {args.pitcher} vs {args.team}...")
+    r = run(df, args.pitcher, args.team, league=(lg, hist))
+    path = write(r)
+    a = r.result.arsenal
+    print(f"{a.pitcher_name} ({a.throws}HP): {a.n_pitches} tracked pitches, "
+          + ", ".join(f"{c.label} {100 * c.share:.0f}%" for c in a.clusters))
+    b = r.result.batters.sort_values("score", ascending=False)
+    print(f"{'Batter':<26}{'Bats':<5}{'Adv':>5}{'xRV/100':>9}{'Whiff':>7}{'Chase':>7}{'Hard':>7}  Sample")
+    for _, x in b.iterrows():
+        f = lambda v, pct=True: "  -  " if v != v else (f"{100 * v:5.0f}%" if pct else f"{v:+.2f}")  # noqa: E731
+        print(f"{str(x['batter_name'])[:25]:<26}{str(x['side']):<5}{x['score']:>5.0f}{f(x['xrv100'], False):>9}"
+              f"{f(x['whiff']):>7}{f(x['chase']):>7}{f(x['hard_hit']):>7}  {x['confidence']}")
+    print(f"report: {path}")
+    if not args.no_open:
+        import webbrowser
+        webbrowser.open(path.as_uri())
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     _load_env()
     ap = argparse.ArgumentParser(prog="matchup")
@@ -248,6 +286,13 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("sync", "ingest", "check"):
         s = sub.add_parser(name)
         s.add_argument("paths", nargs="+")
+    lgp = sub.add_parser("league")
+    lgp.add_argument("--refresh", action="store_true", help="re-download pitches instead of using the cache")
+    mp = sub.add_parser("matchup")
+    mp.add_argument("--pitcher", required=True, help="name ('Burnham, Payton') or Trackman ID")
+    mp.add_argument("--team", required=True, help="opponent team code, e.g. AUB_TIG_SB")
+    mp.add_argument("--refresh", action="store_true")
+    mp.add_argument("--no-open", action="store_true", help="don't open the report in the browser")
     args = ap.parse_args(argv)
 
     if args.cmd == "check":
@@ -262,6 +307,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"connected via {conn.transport}")
             print("applied: " + (", ".join(applied) or "nothing (up to date)"))
             return 0
+        if args.cmd in ("league", "matchup"):
+            return cmd_model(args, conn)
         return cmd_sync(args, conn)
     finally:
         conn.close()

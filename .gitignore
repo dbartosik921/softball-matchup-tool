@@ -10,3 +10,7 @@ __pycache__/
 node_modules/
 .next/
 .vercel/
+
+# Generated reports contain player data
+pipeline/reports/
+pipeline/.cache/
