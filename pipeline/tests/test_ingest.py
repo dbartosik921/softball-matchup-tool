@@ -194,3 +194,40 @@ def test_multi_game_file_split(tmp_path):
     assert len({p.sha256 for p in parts}) == 2
     with pytest.raises(ValueError, match="contains 2 games"):
         parse_file(combo)
+
+
+def test_compilation_with_junk_gameuid_splits_by_gameid_and_date(tmp_path):
+    import pandas as pd
+    from matchup.ingest import parse_path
+    from tests.test_dedup import reexport
+
+    a = pd.read_csv(FIXTURE, dtype=str, keep_default_na=False)
+    b = pd.read_csv(reexport(tmp_path, "g2", shift_seconds=24 * 3600), dtype=str, keep_default_na=False)
+    b["Date"] = "2026-04-25"
+    b["GameID"] = "20260425-BoglePark-1"
+    combo = pd.concat([a, b])
+    combo["GameUID"] = "V3 - Softball"          # junk label in every row
+    combo.iloc[:11, combo.columns.get_loc("GameUID")] = ""
+    f = tmp_path / "Arkansas Trackman Data as of 3.5.26.csv"
+    combo.to_csv(f, index=False)
+    parts = parse_path(f)
+    assert len(parts) == 2
+    assert sorted(len(p.pitches) for p in parts) == [219, 219]
+    assert {p.game["game_uid"] for p in parts} == {"20260424-BoglePark-1", "20260425-BoglePark-1"}
+    assert {str(p.game["game_date"]) for p in parts} == {"2026-04-24", "2026-04-25"}
+
+
+def test_blank_uid_rows_join_their_game(tmp_path):
+    import pandas as pd
+    from matchup.ingest import parse_path
+    from tests.test_dedup import reexport
+
+    a = pd.read_csv(FIXTURE, dtype=str, keep_default_na=False)
+    a.iloc[:5, a.columns.get_loc("GameUID")] = ""   # a few rows lost their UID
+    b = pd.read_csv(reexport(tmp_path, "g2", shift_seconds=4 * 3600), dtype=str, keep_default_na=False)
+    b["GameUID"] = "0b0b0b0b-1111-2222-3333-444455556666"
+    b["GameID"] = "20260424-BoglePark-2"
+    f = tmp_path / "combo.csv"
+    pd.concat([a, b]).to_csv(f, index=False)
+    parts = parse_path(f)
+    assert sorted(len(p.pitches) for p in parts) == [219, 219]

@@ -128,16 +128,47 @@ def _load(path: Path) -> tuple[pd.DataFrame, str]:
     return raw, sha
 
 
+_UID = re.compile(r"^[A-Za-z0-9_:.-]{4,}$")
+
+
+def _valid_uid(v) -> bool:
+    """Trackman GameUIDs are UUIDs; other systems use similar tokens. Edited exports sometimes carry a
+    label instead ('V3 - Softball'): anything with spaces isn't an identifier."""
+    return v is not None and bool(_UID.match(str(v).strip()))
+
+
 def _game_groups(raw: pd.DataFrame) -> list[tuple[str, pd.DataFrame]]:
     """Season compilation files ('Florida Trackman Data as of 3.9.26.csv') hold many games.
-    Split by GameUID, else GameID, else Date. A single-game file returns one group."""
-    for col in ("GameUID", "GameID", "Date"):
-        if col in raw and raw[col].notna().any():
-            keys = raw[col].fillna("")
-            if keys.nunique() > 1:
-                return [(str(k), g) for k, g in raw.groupby(keys, sort=False)]
-            break
-    return [("", raw)]
+    Group by every game identifier present: a real (UUID) GameUID, the GameID and the date. Using all of
+    them keeps a junk or blank GameUID from merging different games. A single-game file returns one group."""
+    parts = []
+    if "GameUID" in raw:
+        parts.append(raw["GameUID"].where(raw["GameUID"].map(_valid_uid), ""))
+    if "GameID" in raw:
+        parts.append(raw["GameID"].fillna(""))
+    if "Date" in raw:
+        parts.append(raw["Date"].fillna(""))
+    if not parts:
+        return [("", raw)]
+    key = parts[0].astype(str)
+    for p in parts[1:]:
+        key = key + "|" + p.astype(str)
+    if key.nunique() <= 1:
+        return [("", raw)]
+    # Rows missing the UID but sharing GameID+Date with a UID'd group belong to that game.
+    if "GameUID" in raw:
+        tail = key.str.split("|", n=1).str[1]
+        uid_for_tail = (
+            pd.DataFrame({"uid": parts[0], "tail": tail})
+            .query("uid != ''").drop_duplicates("tail").set_index("tail")["uid"]
+        )
+        fill = tail.map(uid_for_tail).fillna("")
+        key = key.where(parts[0] != "", fill + "|" + tail)
+    out = []
+    for k, g in raw.groupby(key, sort=False):
+        label = next((x for x in str(k).split("|") if x), "unlabeled")
+        out.append((label if len(label) < 40 else label[:8], g))
+    return out
 
 
 def parse_path(path: str | Path, registry: Resolver | None = None) -> list[ParsedFile]:
@@ -191,7 +222,11 @@ def _parse_frame(raw: pd.DataFrame, path: Path, sha: str, display_name: str,
     gdate = _game_date(raw)
     if gdate is None:
         raise ValueError("could not read the game date (Date, timestamps and GameID are all empty or unreadable)")
-    game_uid = _first(raw, "GameUID") or game_id
+    uid = _first(raw, "GameUID")
+    if uid is not None and not _valid_uid(uid):
+        warnings.append(f"GameUID '{uid}' is not a Trackman ID; ignored")
+        uid = None
+    game_uid = uid or game_id
     if not game_uid:
         # Some exports drop the UID columns. Build a stable one from what identifies the game.
         # No timestamps either: fall back to the file name so two same-day games can't merge.
@@ -215,7 +250,7 @@ def _parse_frame(raw: pd.DataFrame, path: Path, sha: str, display_name: str,
         seq = df["pitch_no"].astype("string").fillna(pd.Series(range(1, len(df) + 1), index=df.index).astype("string"))
         df["pitch_uid"] = df["pitch_uid"].fillna(f"{game_uid}#" + seq)
         warnings.append(f"{n_missing} pitches had no PitchUID; generated from game ID + pitch number")
-    df["game_uid"] = df["game_uid"].fillna(game_uid)
+    df["game_uid"] = game_uid
     df["game_date"] = gdate
     df["season"] = game["season"]
 
