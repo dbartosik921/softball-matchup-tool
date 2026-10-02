@@ -127,10 +127,17 @@ def predict(prep: Prepared, verbose: bool = True) -> pd.DataFrame:
         lr = pd.DataFrame([{"b_side": s, "split": sp, **{f"p_league_{m}": v[m] for m in METRIC_ORDER}}
                            for (ph, s, sp), v in lrates.items() if ph == a.throws])
         t = t.merge(lr, on=["b_side", "split"], how="left")
+        la = lr[lr["split"] == "all"].drop(columns="split").rename(columns={f"p_league_{m}": f"_lall_{m}" for m in METRIC_ORDER})
+        t = t.merge(la, on="b_side", how="left")
         t["has_history"] = t["has_history"].fillna(False).astype(bool)
         for m in METRIC_ORDER:
             # Hitters with no history vs this hand fall back the way the report does.
-            t[f"p_batter_{m}"] = t[f"p_batter_{m}"].fillna(t[f"p_league_{m}"])
+            t[f"p_batter_{m}"] = t[f"p_batter_{m}"].fillna(t[f"_lall_{m}"])
+            # The hitter's own rate is over all counts; shift it by the league's two-strike effect so this
+            # baseline knows the count as well as the others do (otherwise two-strike chase alone sinks it).
+            t[f"p_batter_{m}"] = t[f"p_batter_{m}"] + (t[f"p_league_{m}"] - t[f"_lall_{m}"])
+            if m != "rv":
+                t[f"p_batter_{m}"] = t[f"p_batter_{m}"].clip(0.001, 0.999)
             for name in ("prior", "model"):
                 t[f"p_{name}_{m}"] = t[f"p_{name}_{m}"].fillna(t[f"p_shape_{m}"])
         rows.append(t)
@@ -190,6 +197,8 @@ def verdict(row) -> str:
     # 'validated' = the full model beats BOTH simpler alternatives with confidence
     if row["model_vs_prior_lo"] > 0 and row["model_vs_batter_lo"] > 0:
         return "validated: hitter-vs-shape history adds value"
+    if row["model_vs_prior_hi"] < 0:
+        return "hitter-specific part HURTS: needs heavier shrinkage (run backtest --tune)"
     if row["model_vs_batter_hi"] < 0:
         return "hitter's overall rate is the best guide"
     if row["prior_vs_batter_lo"] > 0 or row["model_vs_batter_lo"] > 0:
@@ -214,7 +223,7 @@ def objective(sc: pd.DataFrame) -> float:
 
 GRID_BANDWIDTH = (0.15, 0.3, 0.6, 1.0)
 GRID_HALF_LIFE = (30.0, 60.0, 120.0, float("inf"))
-GRID_PRIOR = (0.5, 1.0, 2.0, 4.0, 8.0)
+GRID_PRIOR = (0.5, 1.0, 2.0, 4.0, 8.0, 16.0)
 TUNED_METRICS = ["whiff", "chase", "called_strike", "hard_hit", "rv"]
 
 

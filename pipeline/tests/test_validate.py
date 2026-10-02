@@ -78,3 +78,21 @@ def test_verdict_requires_beating_every_simpler_model():
              **{k: 0 for k in ("model_vs_prior_lo", "model_vs_prior_hi", "model_vs_batter_lo", "model_vs_batter_hi",
                                "prior_vs_batter_lo", "prior_vs_batter_hi")}}
     assert V.verdict(noise).startswith("mostly noise")
+
+
+def test_batter_baseline_knows_the_count(prep):
+    """The hitter's-own-rate baseline must carry the two-strike shift like the league baseline does."""
+    pred, _ = V.run_with(prep, settings.DEFAULTS)
+    two = pred[pred.is_two_strike]
+    one = pred[~pred.is_two_strike]
+    lift_league = two.p_league_chase.mean() - one.p_league_chase.mean()
+    lift_batter = two.p_batter_chase.mean() - one.p_batter_chase.mean()
+    assert lift_league > 0.05
+    assert abs(lift_batter - lift_league) < 0.03
+
+
+def test_hurt_verdict():
+    row = {**{f"skill_{n}": 0.1 for n in V.PREDICTORS}, "skill_shape": 0.14,
+           "model_vs_prior_lo": -0.07, "model_vs_prior_hi": -0.03, "model_vs_batter_lo": -0.1,
+           "model_vs_batter_hi": 0.2, "prior_vs_batter_lo": 0.01, "prior_vs_batter_hi": 0.3}
+    assert "HURTS" in V.verdict(row)
