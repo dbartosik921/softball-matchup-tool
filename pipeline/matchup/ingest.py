@@ -16,6 +16,7 @@ import pandas as pd
 
 from . import config as C
 from .features import add_features
+from .ids import Resolver, name_key, recover_ids
 
 _ID_RE = re.compile(C.ID_PATTERN)
 
@@ -62,7 +63,7 @@ def _parse_date(raw: str, game_id: str) -> date | None:
     return pd.to_datetime(m.group(1), format="%Y%m%d").date() if m else None
 
 
-def parse_file(path: str | Path) -> ParsedFile:
+def parse_file(path: str | Path, registry: Resolver | None = None) -> ParsedFile:
     path = Path(path)
     data = path.read_bytes()
     sha = hashlib.sha256(data).hexdigest()
@@ -83,15 +84,6 @@ def parse_file(path: str | Path) -> ParsedFile:
         df[dst] = pd.to_numeric(raw.get(src), errors="coerce").astype("Int64") if src in raw else pd.NA
     for src, dst in C.FLOAT_COLUMNS.items():
         df[dst] = pd.to_numeric(raw.get(src), errors="coerce") if src in raw else np.nan
-
-    # IDs: text only, rejected if damaged.
-    for src, dst in (("PitcherId", "pitcher_tm_id"), ("BatterId", "batter_tm_id"), ("CatcherId", "catcher_tm_id")):
-        ids = raw[src].fillna("").str.strip() if src in raw else pd.Series("", index=raw.index)
-        ok = ids.str.match(_ID_RE)
-        df[dst] = ids.where(ok, None)
-        bad = (~ok & (ids != "")).sum()
-        if bad and dst != "catcher_tm_id":
-            warnings.append(f"{bad} rows with a damaged {src} (e.g. '{ids[~ok & (ids != '')].iloc[0]}') were skipped")
 
     df["p_throws"] = raw["PitcherThrows"].map(_hand)
     df["b_side"] = raw["BatterSide"].map(_hand)
@@ -120,6 +112,34 @@ def parse_file(path: str | Path) -> ParsedFile:
     df["game_date"] = gdate
     df["season"] = game["season"]
 
+    # IDs: kept as text. Damaged ones (Excel) are recovered by name + team: same file first, then the
+    # player registry. Anything still unresolved is skipped, never guessed.
+    rec = recover_ids(raw, game["season"], registry)
+    for src, dst in (("PitcherId", "pitcher_tm_id"), ("BatterId", "batter_tm_id"), ("CatcherId", "catcher_tm_id")):
+        df[dst] = pd.Series(rec.ids.get(src, [None] * len(raw)), index=raw.index, dtype=object)
+    for src in ("PitcherId", "BatterId"):
+        n = rec.damaged.get(src, 0)
+        if not n:
+            continue
+        ff, fr = rec.from_file.get(src, 0), rec.from_registry.get(src, 0)
+        lost = n - ff - fr
+        msg = f"{n} rows with a damaged {src} (e.g. '{rec.example[src]}'): {ff} recovered from this file, {fr} from the registry"
+        if lost:
+            names = rec.unresolved.get(src, [])
+            msg += f", {lost} unrecoverable ({', '.join(names[:5])}{'...' if len(names) > 5 else ''})"
+            if registry is None:
+                msg += " [registry not connected]"
+        warnings.append(msg)
+
+    # Fingerprint for spotting the same game exported twice under different GameUIDs/PitchUIDs:
+    # pitch release time to the second + pitcher name.
+    ts = raw["UTCDateTime"] if "UTCDateTime" in raw else None
+    if ts is None or ts.isna().all():
+        ts = raw.get("Date", pd.Series(index=raw.index, dtype=object)).fillna("") + "T" + raw.get("Time", pd.Series(index=raw.index, dtype=object)).fillna("")
+    ts = ts.fillna("").str.replace(" ", "T").str.slice(0, 19)
+    pkey = raw["Pitcher"].map(name_key) if "Pitcher" in raw else pd.Series(None, index=raw.index)
+    df["pitch_key"] = (ts + "|" + pkey.fillna("")).where((ts.str.len() == 19) & pkey.notna(), None)
+
     # Tracking quality: required metrics present and no Low-confidence flags.
     conf_bad = pd.Series(False, index=raw.index)
     for c in ("PitchReleaseConfidence", "PitchLocationConfidence", "PitchMovementConfidence"):
@@ -140,7 +160,7 @@ def parse_file(path: str | Path) -> ParsedFile:
             reasons.append("unknown handedness")
         if (df["pitch_call"].isna() | (df["pitch_call"] == "Undefined")).any():
             reasons.append("undefined pitch call")
-        warnings.append(f"{dropped} rows skipped ({', '.join(reasons) or 'missing IDs'})")
+        warnings.append(f"{dropped} rows skipped ({', '.join(reasons) or 'unrecoverable IDs'})")
     df = df[keep].copy()
 
     dupes = df["pitch_uid"].duplicated()

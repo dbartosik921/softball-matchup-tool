@@ -62,6 +62,19 @@ already loaded (by file hash) and any pitch already stored (by `PitchUID`). Game
 round trip; each game is written atomically, and a failing batch is retried file by file so one bad
 file never blocks the rest.
 
+### Damaged IDs and duplicate games
+
+- **Damaged IDs** (Excel turned `100000002415` into `1E+11`, `1.00E+11` or a rounded `100000000000`) are
+  recovered by name + team: first from the same player's clean ID elsewhere in the file, then from the
+  player ID registry (`REGISTRY_DATABASE_URL`, read-only), matching any name the player has used, for
+  that season and then any season. Ambiguous matches (two same-named players on one team) are skipped,
+  never guessed.
+- **Duplicate games** (the same game exported more than once under different file names, including
+  re-processed exports with new GameUIDs) are detected by pitch fingerprint: release time to the second
+  + pitcher. The most complete copy is loaded; if a more complete copy arrives later it replaces the
+  stored one. Skipped copies are recorded in `ingest_files` (`status = 'duplicate'`).
+  `check` lists duplicates without writing anything.
+
 ### Tests
 
 ```bash

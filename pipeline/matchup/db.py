@@ -38,7 +38,7 @@ PITCH_COLUMNS = [
     "exit_speed", "launch_angle", "direction", "distance", "hit_launch_conf",
     "hb_arm", "rel_side_arm", "hb_in", "loc_in", "haa_in", "same_side",
     "in_zone", "is_swing", "is_whiff", "is_called_strike", "is_bip", "is_two_strike", "bip_ev_valid",
-    "pa_ending", "pa_result",
+    "pa_ending", "pa_result", "pitch_key",
 ]
 
 Statement = tuple[str, tuple]
@@ -158,7 +158,7 @@ def connect(url: str | None = None, transport: str | None = None):
     if not url:
         raise SystemExit("DATABASE_URL is not set (put it in pipeline/.env or your shell).")
     host = urlparse(url).hostname or ""
-    if host in ("", "host"):
+    if host == "host":
         raise SystemExit("DATABASE_URL still has the example value. Put your Neon connection string in pipeline/.env.")
     transport = transport or os.environ.get("DB_TRANSPORT") or ("http" if host.endswith(".neon.tech") else "tcp")
     return HttpConn(url) if transport == "http" else TcpConn(url)
@@ -268,3 +268,22 @@ def load_many(conn, files: list[ParsedFile], source: str = "folder") -> list[int
     """Insert several games in one round trip (one transaction)."""
     results = conn.batch([load_statement(pf, source) for pf in files])
     return [int(r[0][0]) for r in results]
+
+
+def duplicate_statement(pf: ParsedFile, kept_game_uid: str, source: str = "folder") -> Statement:
+    """Record a file skipped as a duplicate, so later syncs don't re-read it."""
+    return (
+        """insert into ingest_files (sha256, file_name, game_uid, rows_read, rows_loaded, warnings, source,
+                                     status, duplicate_of)
+           select %s, %s, %s, %s::int, 0, %s::jsonb, %s, 'duplicate', %s
+           where exists (select 1 from games where game_uid = %s)
+           on conflict (sha256) do nothing""",
+        (pf.sha256, pf.file_name, kept_game_uid, pf.rows_read, json.dumps(pf.warnings), source,
+         pf.game["game_uid"], kept_game_uid),
+    )
+
+
+def replace_game(conn, old_game_uid: str, pf: ParsedFile, source: str = "folder") -> int:
+    """Swap a stored game for a more complete copy, atomically."""
+    res = conn.batch([("delete from games where game_uid = %s", (old_game_uid,)), load_statement(pf, source)])
+    return int(res[1][0][0])

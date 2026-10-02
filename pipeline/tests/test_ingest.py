@@ -73,12 +73,19 @@ def test_untracked_pitches_kept(pf):
     assert any("without full tracking" in w for w in pf.warnings)
 
 
-def test_excel_damaged_ids_rejected(tmp_path):
+def test_damaged_id_recovered_from_same_file(tmp_path):
     import pandas as pd
     raw = pd.read_csv(FIXTURE, dtype=str, keep_default_na=False)
-    raw.loc[0, "BatterId"] = "1.00E+11"
+    raw.loc[0, "BatterId"] = "1.00E+11"   # Waits, Addy bats again later with a clean ID
     damaged = tmp_path / "damaged.csv"
     raw.to_csv(damaged, index=False)
     pf = parse_file(damaged)
-    assert len(pf.pitches) == 218
-    assert any("damaged BatterId" in w for w in pf.warnings)
+    assert len(pf.pitches) == 219
+    assert pf.pitches.loc[pf.pitches.pitch_uid == raw.loc[0, "PitchUID"], "batter_tm_id"].item() == "1000000000570"
+    assert any("1 recovered from this file" in w for w in pf.warnings)
+
+
+def test_pitch_key(pf):
+    k = pf.pitches.pitch_key.dropna()
+    assert len(k) == 219 and k.is_unique
+    assert k.iloc[0] == "2026-04-24T22:01:45|burnham, payton"

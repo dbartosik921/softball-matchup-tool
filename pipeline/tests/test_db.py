@@ -32,7 +32,7 @@ def conn(request):
         c._endpoint = f"http://127.0.0.1:{srv.server_port}/sql"
         request.addfinalizer(srv.shutdown)
     request.addfinalizer(c.close)
-    assert db.migrate(c) == ["001_init.sql"]
+    assert db.migrate(c) == ["001_init.sql", "002_dedup.sql"]
     return c
 
 
@@ -91,3 +91,55 @@ def test_neon_hosts_default_to_http():
     assert c.transport == "http"
     assert c._endpoint == "https://api.c-6.us-east-2.aws.neon.tech/sql"
     c.close()
+
+
+def test_duplicate_of_stored_game_skipped_or_replaced(conn, tmp_path):
+    from matchup.dedup import match_existing
+    from tests.test_dedup import reexport
+
+    partial = parse_file(reexport(tmp_path, "partial", drop=50))
+    db.load(conn, partial)
+    assert int(conn.query("select count(*) from pitches")[0][0]) == 169
+
+    # A same-size copy: detected as a duplicate of the stored game.
+    copy = parse_file(reexport(tmp_path, "copy2", drop=50))
+    hit = match_existing(conn, [copy])
+    assert hit == {0: ("uid-partial", 169)}
+
+    # The complete copy replaces the partial one; nothing is double counted.
+    full = parse_file(FIXTURE)
+    hit = match_existing(conn, [full])
+    assert hit == {0: ("uid-partial", 169)}
+    assert db.replace_game(conn, "uid-partial", full) == 219
+    assert int(conn.query("select count(*) from pitches")[0][0]) == 219
+    assert int(conn.query("select count(*) from games")[0][0]) == 1
+
+    conn.batch([db.duplicate_statement(copy, full.game["game_uid"])])
+    rows = conn.query("select status, duplicate_of from ingest_files where sha256 = %s", (copy.sha256,))
+    assert rows == [("duplicate", "uid-copy2")]
+
+
+def test_sync_end_to_end(conn, tmp_path, capsys, monkeypatch):
+    """Folder with an original, a re-processed duplicate and a partial copy: one game, 219 pitches."""
+    import shutil
+
+    from matchup import cli
+    from tests.test_dedup import reexport
+
+    folder = tmp_path / "logs"
+    folder.mkdir()
+    shutil.copy(FIXTURE, folder / "original.csv")
+    shutil.move(reexport(tmp_path, "dup"), folder / "dup.csv")
+    shutil.move(reexport(tmp_path, "part", drop=30), folder / "part.csv")
+    monkeypatch.delenv("REGISTRY_DATABASE_URL", raising=False)
+
+    class Args:
+        paths = [str(folder)]
+
+    assert cli.cmd_sync(Args, conn) == 0
+    assert int(conn.query("select count(*) from pitches")[0][0]) == 219
+    assert int(conn.query("select count(*) from ingest_files where status = 'duplicate'")[0][0]) == 2
+    # Re-running is a no-op: all three files are known.
+    assert cli.cmd_sync(Args, conn) == 0
+    out = capsys.readouterr().out
+    assert "3 already loaded" in out
