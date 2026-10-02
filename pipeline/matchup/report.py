@@ -41,7 +41,9 @@ td.l,th.l{text-align:left}tr.bench td{color:var(--ink2)}
 .sw{display:inline-block;width:14px;height:14px;border-radius:3px;vertical-align:-3px;margin-right:4px}
 details{border:1px solid var(--line);border-radius:8px;margin:8px 0;padding:8px 12px}summary{cursor:pointer}
 .conf-Low{color:var(--ink2)}.badge{font-size:11px;border:1px solid var(--line);border-radius:10px;padding:1px 6px;color:var(--ink2)}
-@media print{details{break-inside:avoid}details>*{display:block}}
+@page{size:landscape;margin:8mm}
+@media print{body{font-size:9.5px}main{max-width:none;padding:0}th,td{padding:3px 4px}.wrap{overflow:visible}
+th{position:static}details{break-inside:avoid}details:not([open])>*:not(summary){display:none}}
 """
 
 
@@ -84,13 +86,23 @@ def _score_cell(s):
     return f'<td style="{style}" title="Pitcher advantage: better matchup for the pitcher than {s:.0f}% of qualified hitters"><b>{s:.0f}</b></td>'
 
 
+def _fit_cell(v):
+    if v is None or not np.isfinite(v):
+        return "<td>–</td>"
+    style = _tint(v, 0.0, False, 0.6)
+    title = ("Runs per 100 pitches vs pitches shaped like hers, compared with what this hitter's overall level "
+             "predicts. Negative = handles these shapes worse than usual (good for the pitcher).")
+    return f'<td style="{style}" title="{title}">{v:+.2f}</td>'
+
+
 def _batter_rows(b: pd.DataFrame, slot_of: dict, bench: bool) -> str:
     out = []
     for _, r in b.iterrows():
         slot = slot_of.get(r["batter_tm_id"], "")
         cells = [f'<td class="l">{slot}</td>', f'<td class="l">{html.escape(str(r["batter_name"]))}</td>',
                  f'<td class="l">{r["side"] or "–"}</td>', _score_cell(r.get("score")),
-                 f'<td title="Expected runs per 100 pitches vs this arsenal (+ favors hitter); similar hitters {_fmt(100 * r.get("pop_rv", np.nan), "rv")}">{_fmt(r.get("xrv100"), "rv")}</td>']
+                 f'<td title="Expected runs per 100 pitches vs this arsenal (+ favors hitter); similar hitters {_fmt(100 * r.get("pop_rv", np.nan), "rv")}">{_fmt(r.get("xrv100"), "rv")}</td>',
+                 _fit_cell(r.get("fit100"))]
         for m in COLS:
             cells.append(_cell(r.get(m), r.get("pop_" + m), m, r.get("sim_pitches")))
         for m in ("whiff", "chase"):
@@ -152,7 +164,7 @@ def render(res: Result, team: str, lineup: list[str], slot_pa: np.ndarray, lg, d
             f"<td>{m['spin_rate']:.0f}</td><td>{m['vaa_adj']:.1f}</td><td>{m['rel_height']:.2f}</td><td>{c.n}</td>"
             f"<td class='l note'>{html.escape(', '.join(f'{k} {100 * v:.0f}%' for k, v in c.tag_mix.items()) or 'untagged')}</td></tr>")
 
-    head = ("<tr><th class='l'>#</th><th class='l'>Batter</th><th class='l'>Bats</th><th>Pitcher adv.</th><th>xRV/100</th>"
+    head = ("<tr><th class='l'>#</th><th class='l'>Batter</th><th class='l'>Bats</th><th>Pitcher adv.</th><th>xRV/100</th><th>Shape fit</th>"
             + "".join(f"<th>{COLS[m][0]}</th>" for m in COLS)
             + "<th>2K Whiff %</th><th>2K Chase %</th><th>Sample</th><th class='l'>Vs her</th></tr>")
     details = "\n".join(_detail(res, r["batter_tm_id"], r["batter_name"], r["side"])
@@ -194,7 +206,9 @@ Positive arm-side break = toward her arm side. Usage is recency-weighted.</p>
 how closely it matches that cluster's shape from the hitter's side (velo, vertical and horizontal break toward/away from the hitter,
 release height and side, approach angle) and by how recent it is. <b>Rates are shrunk</b> toward how all same-side hitters did against
 that shape, adjusted for the hitter's overall skill, so a 3-for-5 sample doesn't read as a trend; hover shows the raw rate.
-<b>Pitcher adv.</b> = expected runs per 100 pitches vs her arsenal, as a percentile among qualified D1 hitters (higher = better for her).
+<b>Pitcher adv.</b> = expected runs per 100 pitches vs her arsenal, as a percentile among qualified D1 hitters (higher = better for her);
+it mostly reflects how good the hitter is overall. <b>Shape fit</b> isolates the matchup itself: runs per 100 pitches against pitches shaped
+like hers compared with what the hitter's overall level predicts (negative / blue = she handles these shapes worse than usual).
 <b>Whiff %</b> = misses per swing; <b>Chase %</b> = swings at pitches outside the zone; <b>Called K %</b> = called strikes per pitch;
 <b>Hard-hit %</b> = balls in play at {lg.hard_hit_mph:.1f}+ mph (top quarter of D1); <b>OPS*</b> = OPS on plate appearances that ended on a
 similar pitch. <b>Sample</b>: High ≥ 100, Medium 30–99, Low &lt; 30 similar pitches per pitch type.</p>

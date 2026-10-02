@@ -184,6 +184,7 @@ def evaluate(hist: pd.DataFrame, arsenal: Arsenal, lg, batter_ids: list[str],
                     row.update({m: float(shrunk.at[bid, m]) for m in list(METRICS) + ["ops"]})
                     row.update({f"raw_{m}": float(raw.at[bid, m]) for m in list(METRICS) + ["ops"]})
                     row.update({f"pop_{m}": float(pop_r[m]) for m in list(METRICS) + ["ops"]})
+                    row["base_rv"] = float(prior.at[bid, "rv"])  # her expected rv vs this shape from overall skill alone
                     detail_rows.append(row)
 
     detail = pd.DataFrame(detail_rows)
@@ -212,12 +213,16 @@ def evaluate(hist: pd.DataFrame, arsenal: Arsenal, lg, batter_ids: list[str],
                 for m in ("whiff", "chase", "called_strike", "hard_hit", "ops", "rv"):
                     info[m + suffix] = info["pop_" + m + suffix] = np.nan
                 info["sim_pitches" + suffix] = 0.0
+                info["fit100" + suffix] = np.nan
                 continue
             u = ds["usage"] / ds["usage"].sum()
             for m in ("whiff", "chase", "called_strike", "hard_hit", "ops", "rv"):
                 info[m + suffix] = float((u * ds[m]).sum())
                 info["pop_" + m + suffix] = float((u * ds["pop_" + m]).sum())
             info["sim_pitches" + suffix] = float((u * ds["sim_pitches"]).sum())
+            # Pitch-shape fit: how she does vs pitches shaped like these, relative to what her overall level
+            # vs this hand predicts. Separates 'good hitter' from 'good matchup'. Runs per 100 pitches.
+            info["fit100" + suffix] = float((u * (ds["rv"] - ds["base_rv"])).sum() * 100)
         info["xrv100"] = xrv_ref.get((bid, side, "all"), np.nan)
         info["xrv100_2k"] = xrv_ref.get((bid, side, "2k"), np.nan)
         if len(ref) and np.isfinite(info["xrv100"]):

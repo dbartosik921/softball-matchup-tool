@@ -90,6 +90,9 @@ def test_planted_tendencies_found(league, burnham):
     # The weakness shows up as run value too: her riseball outcomes are worse than similar hitters'.
     assert rise.rv < rise.pop_rv
     assert drop.rv > drop.pop_rv
+    # Shape fit separates matchup from talent: negative for the rise-weak hitter, positive for the drop masher.
+    b = res.batters.set_index("batter_name")
+    assert b.loc["Weak, Rise", "fit100"] < 0 < b.loc["Masher, Drop", "fit100"]
 
 
 def test_handedness_mirror_gives_same_answers(league, burnham):
