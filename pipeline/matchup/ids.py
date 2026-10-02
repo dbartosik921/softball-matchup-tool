@@ -64,29 +64,53 @@ def team_key(raw_team) -> str:
 
 
 class Resolver(Protocol):
-    def resolve(self, nkey: str, team: str, season: str) -> str | None: ...
+    def resolve(self, nkey: str, team: str, season: str) -> tuple[str | None, str]: ...
 
 
 @dataclass
 class RegistryLookup:
-    """In-memory index of the registry: (name_key, team, season) and (name_key, team) -> Trackman IDs."""
+    """In-memory index of the registry for ID recovery.
+
+    Match order, stopping at the first level that has candidates:
+      1. name + team + season      2. name + team (any season)
+      (team codes from other systems are translated through the registry's team_source_codes)
+      3. name + season, only if exactly one registry player has that name that season
+      4. name alone, only if exactly one registry player has ever had that name
+    Two or more candidates at a level means skip, never guess. Levels 3-4 are reported as
+    'by name only' so they can be reviewed.
+    """
 
     by_season: dict[tuple[str, str, str], set[str]] = field(default_factory=dict)
     by_team: dict[tuple[str, str], set[str]] = field(default_factory=dict)
+    by_name_season: dict[tuple[str, str], set[str]] = field(default_factory=dict)
+    by_name: dict[str, set[str]] = field(default_factory=dict)
+    team_alias: dict[str, str] = field(default_factory=dict)
 
     def add(self, nkey: str, team: str | None, season: str | None, tm_id: str):
         if not nkey or not tm_id or classify_id(tm_id) != "ok":
             return
+        self.by_name.setdefault(nkey, set()).add(tm_id)
+        if season:
+            self.by_name_season.setdefault((nkey, season), set()).add(tm_id)
         if team:
             self.by_team.setdefault((nkey, team), set()).add(tm_id)
             if season:
                 self.by_season.setdefault((nkey, team, season), set()).add(tm_id)
 
-    def resolve(self, nkey: str, team: str, season: str) -> str | None:
-        for ids in (self.by_season.get((nkey, team, season)), self.by_team.get((nkey, team))):
+    def add_alias(self, source_code: str, team_code: str):
+        if source_code and team_code:
+            self.team_alias[team_key(source_code)] = team_code
+
+    def resolve(self, nkey: str, team: str, season: str) -> tuple[str | None, str]:
+        teams = [team] + ([self.team_alias[team]] if team in self.team_alias else [])
+        levels = []
+        for t in teams:
+            levels += [(self.by_season.get((nkey, t, season)), "team"), (self.by_team.get((nkey, t)), "team")]
+        levels += [(self.by_name_season.get((nkey, season)), "name"), (self.by_name.get(nkey), "name")]
+        for ids, how in levels:
             if ids:
-                return next(iter(ids)) if len(ids) == 1 else None  # ambiguous: never guess
-        return None
+                return (next(iter(ids)), how) if len(ids) == 1 else (None, "ambiguous")
+        return None, ""
 
     def __len__(self):
         return len(self.by_team)
@@ -109,6 +133,15 @@ def load_registry(url: str) -> RegistryLookup:
     finally:
         conn.close()
     lk = RegistryLookup()
+    try:
+        conn = db.connect(url)
+        try:
+            for source_code, team_code in conn.query("select source_code, team_code from team_source_codes"):
+                lk.add_alias(source_code, team_code)
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 - aliases are optional
+        pass
     for nkey, tm_id, season, team in rows:
         lk.add(nkey, team, season, tm_id)
     return lk
@@ -122,6 +155,7 @@ class RecoveryResult:
     from_registry: dict[str, int]        # id column -> rows recovered from the registry
     unresolved: dict[str, list[str]]     # id column -> names that could not be resolved
     example: dict[str, str]              # id column -> an example damaged value
+    by_name_only: dict[str, list[str]] = field(default_factory=dict)  # id column -> names matched on name alone
 
 
 def recover_ids(raw, season: str, registry: Resolver | None = None) -> RecoveryResult:
@@ -147,7 +181,7 @@ def recover_ids(raw, season: str, registry: Resolver | None = None) -> RecoveryR
         ids = raw[icol].fillna("").astype(str).str.strip().tolist()
         names = raw[ncol].tolist() if ncol in raw.columns else [None] * len(raw)
         teams = raw[tcol].tolist() if tcol in raw.columns else [None] * len(raw)
-        out, dmg, ff, fr, unresolved = [], 0, 0, 0, set()
+        out, dmg, ff, fr, unresolved, name_only = [], 0, 0, 0, set(), set()
         for v, s, n, t in zip(ids, status[icol], names, teams):
             if s == "ok":
                 out.append(v)
@@ -166,8 +200,8 @@ def recover_ids(raw, season: str, registry: Resolver | None = None) -> RecoveryR
                 if len(cands) == 1:
                     cache[(nk, tk)] = (next(iter(cands)), "file")
                 elif len(cands) == 0 and registry is not None:
-                    hit = registry.resolve(nk, tk, season)
-                    cache[(nk, tk)] = (hit, "registry") if hit else (None, "")
+                    hit, level = registry.resolve(nk, tk, season)
+                    cache[(nk, tk)] = (hit, "registry-name" if level == "name" else "registry") if hit else (None, "")
                 else:
                     cache[(nk, tk)] = (None, "")
             rid, how = cache[(nk, tk)]
@@ -178,8 +212,11 @@ def recover_ids(raw, season: str, registry: Resolver | None = None) -> RecoveryR
                 ff += 1
             else:
                 fr += 1
+                if how == "registry-name":
+                    name_only.add(_clean(str(n)))
         res.ids[icol] = out
         if dmg:
             res.damaged[icol], res.from_file[icol], res.from_registry[icol] = dmg, ff, fr
             res.unresolved[icol] = sorted(unresolved)
+            res.by_name_only[icol] = sorted(name_only)
     return res

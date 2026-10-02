@@ -62,8 +62,27 @@ def test_fully_damaged_recovered_from_registry(tmp_path):
 def test_registry_falls_back_to_any_season():
     lk = RegistryLookup()
     lk.add("waits, addy", "MIS_TIG_SB", "2024-25", "1000000000570")
-    assert lk.resolve("waits, addy", "MIS_TIG_SB", "2025-26") == "1000000000570"
-    assert lk.resolve("waits, addy", "UNI_ARK_SB", "2025-26") is None  # wrong team: no match
+    assert lk.resolve("waits, addy", "MIS_TIG_SB", "2025-26") == ("1000000000570", "team")
+
+
+def test_unknown_team_code_falls_back_to_unique_name():
+    lk = RegistryLookup()
+    lk.add("waits, addy", "MIS_TIG_SB", "2025-26", "1000000000570")
+    # Yakkertech-style team code the registry doesn't know: unique name in the season wins
+    assert lk.resolve("waits, addy", "Mississippi State", "2025-26") == ("1000000000570", "name")
+    # a namesake elsewhere makes the name ambiguous: skip
+    lk.add("waits, addy", "UNI_ARK_SB", "2025-26", "100000009999")
+    assert lk.resolve("waits, addy", "Mississippi State", "2025-26") == (None, "ambiguous")
+    # but the team still disambiguates when it matches
+    assert lk.resolve("waits, addy", "UNI_ARK_SB", "2025-26") == ("100000009999", "team")
+
+
+def test_team_alias_from_registry():
+    lk = RegistryLookup()
+    lk.add("waits, addy", "MIS_TIG_SB", "2025-26", "1000000000570")
+    lk.add("waits, addy", "UNI_ARK_SB", "2025-26", "100000009999")
+    lk.add_alias("MSU", "MIS_TIG_SB")
+    assert lk.resolve("waits, addy", "MSU", "2025-26") == ("1000000000570", "team")
 
 
 def test_ambiguous_names_are_never_guessed(tmp_path):
@@ -84,3 +103,20 @@ def test_rounded_zero_ids_are_not_trusted(tmp_path):
     pf = parse_file(out, registry=_registry_from_fixture())
     assert "100000000000" not in set(pf.pitches.batter_tm_id)
     assert pf.pitches.batter_tm_id.nunique() > 10
+
+
+def test_foreign_ids_and_team_codes_recovered_by_name(tmp_path):
+    """Yakkertech export: YAK:/WSB: IDs and team names instead of Trackman codes."""
+    raw = pd.read_csv(FIXTURE, dtype=str, keep_default_na=False)
+    raw["PitcherId"] = "YAK:GO:PE:7c9c6fa3-1ad3:0503741"
+    raw["BatterId"] = "WSB:win_johnsre10"
+    raw["PitcherTeam"] = raw["PitcherTeam"].map({"UNI_ARK_SB": "Arkansas", "MIS_TIG_SB": "Mississippi State"})
+    raw["BatterTeam"] = raw["BatterTeam"].map({"UNI_ARK_SB": "Arkansas", "MIS_TIG_SB": "Mississippi State"})
+    f = tmp_path / "Arkansas_MississippiState_04102026.csv"
+    raw.to_csv(f, index=False)
+    clean = parse_file(FIXTURE)
+    pf = parse_file(f, registry=_registry_from_fixture())
+    assert len(pf.pitches) == 219
+    m = clean.pitches.merge(pf.pitches, on="pitch_uid", suffixes=("", "_r"))
+    assert (m.batter_tm_id == m.batter_tm_id_r).all() and (m.pitcher_tm_id == m.pitcher_tm_id_r).all()
+    assert any("matched by name only" in w for w in pf.warnings)

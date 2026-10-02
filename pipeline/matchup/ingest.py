@@ -266,6 +266,9 @@ def _parse_frame(raw: pd.DataFrame, path: Path, sha: str, display_name: str,
         ff, fr = rec.from_file.get(src, 0), rec.from_registry.get(src, 0)
         lost = n - ff - fr
         msg = f"{n} rows with a damaged or missing {src} (e.g. '{rec.example[src] or 'blank'}'): {ff} recovered from this file, {fr} from the registry"
+        named = rec.by_name_only.get(src, [])
+        if named:
+            msg += f" ({len(named)} player(s) matched by name only, team code not in registry: {', '.join(named[:5])}{'...' if len(named) > 5 else ''})"
         if lost:
             names = rec.unresolved.get(src, [])
             msg += f", {lost} unrecoverable ({', '.join(names[:5])}{'...' if len(names) > 5 else ''})"
