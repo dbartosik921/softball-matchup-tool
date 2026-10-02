@@ -25,15 +25,18 @@ def recency_weights(
     season: pd.Series,
     as_of: date,
     as_of_season: str,
-    half_life: float = HALF_LIFE_DAYS,
-    season_mult: tuple[float, ...] = PRIOR_SEASON_MULT,
+    half_life: float | None = None,
+    season_mult: tuple[float, ...] | None = None,
 ) -> np.ndarray:
+    half_life = HALF_LIFE_DAYS if half_life is None else half_life   # read at call time (settings can change it)
+    season_mult = PRIOR_SEASON_MULT if season_mult is None else season_mult
     gd = pd.to_datetime(game_date)
     age_days = (pd.Timestamp(as_of) - gd).dt.days.to_numpy(dtype=float)
     seasons_back = season_start_year(as_of_season) - season.map(season_start_year).to_numpy()
     mult = np.zeros(len(gd))
     for i, m in enumerate(season_mult):
         mult[seasons_back == i] = m
-    w = np.where(seasons_back == 0, 0.5 ** (np.clip(age_days, 0, None) / half_life), 1.0) * mult
+    decay = 0.5 ** (np.clip(age_days, 0, None) / half_life) if np.isfinite(half_life) else np.ones(len(gd))
+    w = np.where(seasons_back == 0, decay, 1.0) * mult
     w[age_days < 0] = 0.0  # never use the future
     return w

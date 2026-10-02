@@ -138,6 +138,19 @@ def _detail(res: Result, bid: str, name: str, side: str) -> str:
             + "\n".join(rows) + "</table></div></details>")
 
 
+def _validation_html() -> str:
+    from . import settings
+    v = settings.validation()
+    names = {"whiff": "Whiff %", "chase": "Chase %", "called_strike": "Called K %", "hard_hit": "Hard-hit %",
+             "rv": "xRV / Pitcher adv. / Shape fit"}
+    if not v:
+        return ('<h2>Validation</h2><p class="note">Not backtested yet: run <code>python -m matchup backtest --tune --apply</code> '
+                "to check which columns predict later games.</p>")
+    items = "".join(f"<li><b>{names.get(k, k)}</b>: {html.escape(x)}</li>" for k, x in v.items())
+    return ('<h2>Validation</h2><p class="note">Backtest: matchups built from earlier games, scored on later games. '
+            f"Treat columns that aren't validated as context, not a prediction.</p><ul class='note'>{items}</ul>")
+
+
 def render(res: Result, team: str, lineup: list[str], slot_pa: np.ndarray, lg, data_through, n_games: int) -> str:
     a = res.arsenal
     b = res.batters.copy()
@@ -201,6 +214,7 @@ Positive arm-side break = toward her arm side. Usage is recency-weighted.</p>
 <h2>By pitch type</h2>
 {details}
 
+{_validation_html()}
 <h2>How to read this</h2>
 <p class="note"><b>Similar pitches</b>: for each of her pitch clusters, every pitch a hitter has seen from a same-handed pitcher is weighted by
 how closely it matches that cluster's shape from the hitter's side (velo, vertical and horizontal break toward/away from the hitter,

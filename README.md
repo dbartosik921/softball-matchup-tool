@@ -85,6 +85,31 @@ How the numbers are built (`matchup/engine.py`):
    hitter's own overall skill vs that hand. Prior strengths live in `engine.METRICS`.
 5. **Pitcher advantage** = expected runs per 100 pitches vs her arsenal, as a percentile among qualified hitters.
 
+### Backtest (validation)
+
+```bash
+python -m matchup backtest                    # score current settings on later games (~2 min)
+python -m matchup backtest --tune             # search better settings (~20-30 min)
+python -m matchup backtest --tune --apply     # ...and save them to pipeline/settings.json for every report
+```
+
+Games before the split date (default: 60% of the season) are the only data the model sees; each later pitch
+thrown by the sampled pitchers is predicted five ways and scored against what happened:
+
+| predictor | what it knows |
+|---|---|
+| league | league rate for this pitcher hand x batter side |
+| batter | the hitter's own rate vs this hand |
+| shape | all same-side hitters vs pitches shaped like this one |
+| prior | shape + hitter's overall skill |
+| model | prior + the hitter's own history vs similar pitches (what the report shows) |
+
+Skill = % lower error than the league baseline; a bootstrap over hitters gives 90% intervals. Each metric gets
+a plain verdict ("validated", "pitch shape adds value; hitter-specific part unproven", "hitter's overall rate
+is the best guide", "mostly noise"), which the HTML report prints in its Validation section. Tuning searches
+similarity width, recency half-life and per-metric shrinkage strength. `settings.json` is committed on purpose:
+it holds tuning results, not player data.
+
 ### Damaged IDs and duplicate games
 
 - **Damaged IDs** (Excel turned `100000002415` into `1E+11`, `1.00E+11` or a rounded `100000000000`) are

@@ -42,6 +42,18 @@ class Arsenal:
     n_pitches: int
     clusters: list[Cluster]
     pitches: pd.DataFrame = field(repr=False)   # tracked pitches with a 'cluster' column
+    model: object = field(default=None, repr=False)   # (GaussianMixture, remap) to assign new pitches
+    scale: dict = field(default=None, repr=False)
+
+    def assign(self, df: pd.DataFrame) -> pd.Series:
+        """Cluster for new pitches by this pitcher (e.g. later games). NaN where shape is missing."""
+        gm, remap = self.model
+        ok = df[shape.CLUSTER_FEATURES].notna().all(axis=1) & df["pitch_tracked"]
+        out = pd.Series(np.nan, index=df.index)
+        if ok.any():
+            X = shape.standardize(df[ok], shape.CLUSTER_FEATURES, self.scale)
+            out[ok] = pd.Series(gm.predict(X), index=df.index[ok]).map(remap).astype(float)
+        return out
 
     def usage(self, side: str, two_strike: bool = False) -> dict[int, float]:
         key = side + ("2K" if two_strike else "")
@@ -150,4 +162,4 @@ def fit_arsenal(pitches: pd.DataFrame, lg, weights: np.ndarray | None = None, se
     _disambiguate(clusters, lg)
     first = pitches.iloc[0]
     return Arsenal(str(first["pitcher_tm_id"]), str(first["pitcher_name"]), first.get("pitcher_team"),
-                   str(first["p_throws"]), len(t), clusters, t)
+                   str(first["p_throws"]), len(t), clusters, t, model=(best, remap), scale=lg.scale)

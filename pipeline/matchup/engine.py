@@ -11,10 +11,14 @@ Then combine clusters by how often the pitcher throws each one to that side (and
 
 Overall score = expected run value per 100 pitches vs this arsenal, as a percentile among all qualified
 D1 batters: 50 = average hitter, higher = better for the pitcher.
+
+Everything that doesn't depend on the pitcher (the league pool per hand x side, its shape features,
+outcome indicators, recency weights, batter totals) is built once in a Context and reused, so a backtest
+over dozens of pitchers costs one similarity pass per pitch cluster.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 
 import numpy as np
@@ -29,8 +33,9 @@ BANDWIDTH = 0.3          # added to the cluster covariance (standardized units):
                          # sample size); the backtest tunes it on real data.
 MIN_WEIGHT = 0.01        # pitches less typical than this (chi-square tail) get no weight
 REFERENCE_MIN_PITCHES = 150
+PRIOR_SCALE: dict[str, float] | float = 1.0   # multiplies prior strengths; per metric after backtest tuning
 
-# metric: (numerator, denominator, prior strength in denominator units, scale for display)
+# metric: (numerator, denominator, prior strength in denominator units)
 METRICS = {
     "whiff": ("wh", "sw", 50.0),
     "chase": ("ch", "oz", 80.0),
@@ -41,25 +46,33 @@ METRICS = {
     "slg": ("tb", "ab", 40.0),
 }
 SUM_COLS = ["n", "sw", "wh", "oz", "ch", "cs", "bip", "hard", "rv", "obp_num", "obp_den", "tb", "ab"]
+IDX = {c: i for i, c in enumerate(SUM_COLS)}
 _HITS = {"1B": 1, "2B": 2, "3B": 3, "HR": 4}
+SHAPE_REQUIRED = ["horz_break", "rel_side", "vaa_adj", "rel_speed", "induced_vert_break", "rel_height"]
 
 
-def indicators(df: pd.DataFrame, hard_hit: float) -> pd.DataFrame:
+def prior_strength(m: str) -> float:
+    scale = PRIOR_SCALE.get(m, 1.0) if isinstance(PRIOR_SCALE, dict) else PRIOR_SCALE
+    return METRICS[m][2] * scale
+
+
+def indicators(df: pd.DataFrame, hard_hit: float) -> np.ndarray:
     oz = (df["in_zone"] == False).fillna(False).to_numpy()  # noqa: E712
-    swing = df["is_swing"].to_numpy()
+    swing = df["is_swing"].to_numpy(bool)
     res = df["pa_result"].where(df["pa_ending"], None)
     hit = res.isin(list(_HITS)).to_numpy()
-    on = (hit | res.isin(["BB", "HBP"]).to_numpy())
+    on = hit | res.isin(["BB", "HBP"]).to_numpy()
     ab = res.isin(list(_HITS) + ["OUT", "K", "FC", "ROE"]).to_numpy()
     obp_den = ab | res.isin(["BB", "HBP", "SF"]).to_numpy()
-    bipv = df["bip_ev_valid"].to_numpy()
-    return pd.DataFrame({
-        "n": 1.0, "sw": swing, "wh": df["is_whiff"].to_numpy(), "oz": oz, "ch": swing & oz,
-        "cs": df["is_called_strike"].to_numpy(), "bip": bipv,
+    bipv = df["bip_ev_valid"].to_numpy(bool)
+    cols = {
+        "n": np.ones(len(df)), "sw": swing, "wh": df["is_whiff"].to_numpy(bool), "oz": oz, "ch": swing & oz,
+        "cs": df["is_called_strike"].to_numpy(bool), "bip": bipv,
         "hard": bipv & (df["exit_speed"].fillna(0).to_numpy() >= hard_hit),
-        "rv": df["rv"].fillna(0).to_numpy(), "obp_num": on, "obp_den": obp_den,
-        "tb": res.map(_HITS).fillna(0).to_numpy(), "ab": ab,
-    }, index=df.index).astype(float)
+        "rv": df["rv"].fillna(0).to_numpy(float), "obp_num": on, "obp_den": obp_den,
+        "tb": res.map(_HITS).fillna(0).to_numpy(float), "ab": ab,
+    }
+    return np.column_stack([np.asarray(cols[c], float) for c in SUM_COLS])
 
 
 def _frame(df: pd.DataFrame, side: str) -> pd.DataFrame:
@@ -93,25 +106,80 @@ def kernel(Xpool: np.ndarray, Xc: np.ndarray) -> np.ndarray:
     return w
 
 
-def _rates(sums: pd.DataFrame, prior: pd.DataFrame | None = None) -> pd.DataFrame:
-    """Shrunk rates. prior: same index as sums, one column per metric (None -> raw rates)."""
+def _rates(S: np.ndarray, prior: dict | None = None) -> dict[str, np.ndarray]:
+    """Rates from summed indicators S (rows x SUM_COLS). With prior: shrunk toward it."""
+    S = np.atleast_2d(S)
     out = {}
-    for m, (num, den, k) in METRICS.items():
+    for m, (num, den, _) in METRICS.items():
+        a, b = S[:, IDX[num]], S[:, IDX[den]]
         if prior is None:
-            out[m] = sums[num] / sums[den].replace(0, np.nan)
+            out[m] = np.where(b > 0, a / np.where(b > 0, b, 1), np.nan)
         else:
-            out[m] = (sums[num] + k * prior[m]) / (sums[den] + k)
-    r = pd.DataFrame(out, index=sums.index)
-    r["ops"] = r["obp"] + r["slg"]
-    return r
+            k = prior_strength(m)
+            out[m] = (a + k * prior[m]) / (b + k)
+    out["ops"] = out["obp"] + out["slg"]
+    return out
 
 
-def _clip_prior(p: pd.DataFrame) -> pd.DataFrame:
-    p = p.copy()
+def _clip_prior(p: dict) -> dict:
+    p = dict(p)
     for m in ("whiff", "chase", "called_strike", "hard_hit", "obp"):
-        p[m] = p[m].clip(0.005, 0.995)
-    p["slg"] = p["slg"].clip(0.0, 4.0)
+        p[m] = np.clip(p[m], 0.005, 0.995)
+    p["slg"] = np.clip(p["slg"], 0.0, 4.0)
     return p
+
+
+@dataclass
+class SideData:
+    batters: np.ndarray        # batter ids (index = code)
+    code_of: dict              # batter id -> code
+    counts: np.ndarray         # pitches seen vs this hand from this side, per batter
+    skill: dict                # metric -> per-batter (overall shrunk rate - population rate)
+    overall: dict              # metric -> per-batter overall shrunk rate vs this hand
+    pool: pd.DataFrame         # tracked pitches with shape (batter-relative frame)
+    X: np.ndarray
+    codes: np.ndarray
+    ind: np.ndarray
+    r: np.ndarray
+    two: np.ndarray
+
+
+@dataclass
+class Context:
+    hist: pd.DataFrame
+    lg: object
+    as_of: date | None = None
+    season: str | None = None
+    _sides: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        h = self.hist
+        self.as_of = self.as_of or max(h["game_date"])
+        self.season = self.season or h.loc[h["game_date"] == self.as_of, "season"].iloc[0]
+        rec = recency_weights(h["game_date"], h["season"], self.as_of, self.season)
+        self.hist = h.assign(_r=rec / rec.max() if rec.max() > 0 else rec)
+
+    def side(self, hand: str, side: str) -> SideData:
+        key = (hand, side)
+        if key in self._sides:
+            return self._sides[key]
+        h = self.hist[(self.hist["p_throws"] == hand) & (self.hist["b_side"] == side)]
+        codes, batters = pd.factorize(h["batter_tm_id"])
+        ind = indicators(h, self.lg.hard_hit_mph)
+        r = h["_r"].to_numpy(float)
+        nb = len(batters)
+        S = np.column_stack([np.bincount(codes, weights=r * ind[:, j], minlength=nb) for j in range(ind.shape[1])])
+        pop = _rates(S.sum(0))
+        pop1 = {m: v[0] for m, v in pop.items()}
+        overall = _rates(S, {m: np.full(nb, pop1[m]) for m in METRICS})
+        skill = {m: overall[m] - pop1[m] for m in METRICS}
+        ok = (h["pitch_tracked"].to_numpy(bool) & h[SHAPE_REQUIRED].notna().all(axis=1).to_numpy())
+        pool = _frame(h[ok], side)
+        sd = SideData(np.asarray(batters), {b: i for i, b in enumerate(batters)}, np.bincount(codes, minlength=nb),
+                      skill, overall, pool, _X(pool, self.lg), codes[ok], ind[ok], r[ok],
+                      h["is_two_strike"].to_numpy(bool)[ok])
+        self._sides[key] = sd
+        return sd
 
 
 def batter_side_vs(hist: pd.DataFrame, batter_id: str, p_hand: str) -> str | None:
@@ -130,77 +198,63 @@ class Result:
 
 
 def evaluate(hist: pd.DataFrame, arsenal: Arsenal, lg, batter_ids: list[str],
-             as_of: date | None = None, season: str | None = None) -> Result:
+             as_of: date | None = None, season: str | None = None, ctx: Context | None = None) -> Result:
     """hist: calibrated regular-season pitches (with rv, vaa_adj). batter_ids: batters to report on."""
+    ctx = ctx or Context(hist, lg, as_of, season)
     p_hand = arsenal.throws
-    as_of = as_of or max(hist["game_date"])
-    season = season or hist.loc[hist["game_date"] == as_of, "season"].iloc[0]
-    rec = recency_weights(hist["game_date"], hist["season"], as_of, season)
-    rec = rec / rec.max() if rec.max() > 0 else rec
-    hist = hist.assign(_r=rec)
-    vs_hand = hist[hist["p_throws"] == p_hand]
-    ind_all = indicators(vs_hand, lg.hard_hit_mph)
-
-    detail_rows, pop_rows, xrv_ref = [], [], {}
+    want = set(batter_ids)
+    detail_rows, pop_rows, ref_xrv, xrv_of = [], [], [], {}
+    mnames = list(METRICS) + ["ops"]
     for side in ("L", "R"):
-        side_mask = vs_hand["b_side"] == side
-        overall_sums = (ind_all[side_mask].mul(vs_hand.loc[side_mask, "_r"], axis=0)
-                        .groupby(vs_hand.loc[side_mask, "batter_tm_id"]).sum())
-        pop_overall = _rates(pd.DataFrame([overall_sums.sum()], index=["pop"]))
-        batter_overall = _rates(overall_sums, prior=pd.DataFrame(
-            np.repeat(pop_overall.values, len(overall_sums), axis=0), index=overall_sums.index, columns=pop_overall.columns))
-        skill = batter_overall - pop_overall.iloc[0]
-
-        pool = _frame(vs_hand[side_mask & vs_hand["pitch_tracked"]].dropna(subset=["horz_break", "rel_side", "vaa_adj",
-                                                                                   "rel_speed", "induced_vert_break",
-                                                                                   "rel_height"]), side)
-        Xpool = _X(pool, lg)
-        ind = ind_all.loc[pool.index]
+        sd = ctx.side(p_hand, side)
+        nb = len(sd.batters)
         cl_pitches = _frame(arsenal.pitches, side)
+        wanted_codes = [sd.code_of[b] for b in sd.batters if b in want]
+        xrv = {"all": np.zeros(nb), "2k": np.zeros(nb)}
         for split in ("all", "2k"):
-            smask = np.ones(len(pool), bool) if split == "all" else pool["is_two_strike"].to_numpy()
+            smask = np.ones(len(sd.codes), bool) if split == "all" else sd.two
             usage = arsenal.usage(side, two_strike=(split == "2k"))
             for c in arsenal.clusters:
                 Xc = _X(cl_pitches[cl_pitches["cluster"] == c.cid], lg)
-                w = kernel(Xpool, Xc) * pool["_r"].to_numpy() * smask
-                sums = ind.mul(w, axis=0).groupby(pool["batter_tm_id"]).sum()
-                pop_s = sums.sum()
-                pop_r = _rates(pd.DataFrame([pop_s], index=["pop"])).iloc[0]
+                w = kernel(sd.X, Xc) * sd.r * smask
+                S = np.column_stack([np.bincount(sd.codes, weights=w * sd.ind[:, j], minlength=nb)
+                                     for j in range(sd.ind.shape[1])])
+                pop_r = {m: v[0] for m, v in _rates(S.sum(0)).items()}
                 pop_rows.append({"side": side, "split": split, "cluster": c.cid, "label": c.label,
-                                 "sim_pitches": pop_s["n"], **pop_r.to_dict()})
-                sk = skill.reindex(sums.index).fillna(0.0)
-                prior = _clip_prior(pd.DataFrame({m: pop_r[m] + sk[m] for m in METRICS}, index=sums.index))
-                shrunk = _rates(sums, prior)
-                raw = _rates(sums)
-                for bid in sums.index:
-                    xrv_ref.setdefault((bid, side, split), 0.0)
-                    xrv_ref[(bid, side, split)] += usage.get(c.cid, 0.0) * shrunk.at[bid, "rv"] * 100
-                want = [b for b in batter_ids if b in sums.index]
-                for bid in want:
-                    row = {"batter_tm_id": bid, "side": side, "split": split, "cluster": c.cid, "label": c.label,
-                           "usage": usage.get(c.cid, 0.0), "sim_pitches": float(sums.at[bid, "n"]),
-                           "sim_swings": float(sums.at[bid, "sw"]), "sim_bip": float(sums.at[bid, "bip"]),
-                           "sim_pa": float(sums.at[bid, "obp_den"])}
-                    row.update({m: float(shrunk.at[bid, m]) for m in list(METRICS) + ["ops"]})
-                    row.update({f"raw_{m}": float(raw.at[bid, m]) for m in list(METRICS) + ["ops"]})
-                    row.update({f"pop_{m}": float(pop_r[m]) for m in list(METRICS) + ["ops"]})
-                    row["base_rv"] = float(prior.at[bid, "rv"])  # her expected rv vs this shape from overall skill alone
+                                 "sim_pitches": float(S[:, 0].sum()), **pop_r})
+                prior = _clip_prior({m: pop_r[m] + sd.skill[m] for m in METRICS})
+                shrunk = _rates(S, prior)
+                raw = _rates(S)
+                xrv[split] += usage.get(c.cid, 0.0) * shrunk["rv"] * 100
+                for i in wanted_codes:
+                    row = {"batter_tm_id": sd.batters[i], "side": side, "split": split, "cluster": c.cid,
+                           "label": c.label, "usage": usage.get(c.cid, 0.0), "sim_pitches": float(S[i, IDX["n"]]),
+                           "sim_swings": float(S[i, IDX["sw"]]), "sim_bip": float(S[i, IDX["bip"]]),
+                           "sim_pa": float(S[i, IDX["obp_den"]])}
+                    row.update({m: float(shrunk[m][i]) for m in mnames})
+                    row.update({f"raw_{m}": float(raw[m][i]) for m in mnames})
+                    row.update({f"pop_{m}": float(pop_r[m]) for m in mnames})
+                    row["base_rv"] = float(prior["rv"][i])  # expected rv vs this shape from overall skill alone
+                    row.update({f"prior_{m}": float(prior[m][i]) for m in METRICS})
+                    row.update({f"bat_{m}": float(sd.overall[m][i]) for m in METRICS})
                     detail_rows.append(row)
+        qualified = sd.counts >= REFERENCE_MIN_PITCHES
+        ref_xrv.append(xrv["all"][qualified])
+        for i in wanted_codes:
+            xrv_of[(sd.batters[i], side)] = (xrv["all"][i], xrv["2k"][i])
 
     detail = pd.DataFrame(detail_rows)
     population = pd.DataFrame(pop_rows)
-
-    # Reference distribution for the percentile score: every batter with enough pitches vs this hand.
-    counts = vs_hand.groupby(["batter_tm_id", "b_side"]).size()
-    ref = pd.Series({k: v for k, v in xrv_ref.items() if k[2] == "all" and counts.get((k[0], k[1]), 0) >= REFERENCE_MIN_PITCHES})
+    ref = np.concatenate(ref_xrv) if ref_xrv else np.array([])
 
     rows = []
+    hist = ctx.hist
     for bid in batter_ids:
         side = batter_side_vs(hist, bid, p_hand)
         h = hist[hist["batter_tm_id"] == bid]
         info = {"batter_tm_id": bid, "batter_name": h["batter_name"].iloc[-1] if len(h) else None,
                 "batter_team": h["batter_team"].iloc[-1] if len(h) else None, "side": side,
-                "pitches_vs_hand": int(((h["p_throws"] == p_hand)).sum())}
+                "pitches_vs_hand": int((h["p_throws"] == p_hand).sum())}
         direct = h[(h["pitcher_tm_id"] == arsenal.pitcher_id) & h["pa_ending"]]
         info["direct_pa"] = len(direct)
         vc = direct["pa_result"].value_counts()
@@ -223,8 +277,8 @@ def evaluate(hist: pd.DataFrame, arsenal: Arsenal, lg, batter_ids: list[str],
             # Pitch-shape fit: how she does vs pitches shaped like these, relative to what her overall level
             # vs this hand predicts. Separates 'good hitter' from 'good matchup'. Runs per 100 pitches.
             info["fit100" + suffix] = float((u * (ds["rv"] - ds["base_rv"])).sum() * 100)
-        info["xrv100"] = xrv_ref.get((bid, side, "all"), np.nan)
-        info["xrv100_2k"] = xrv_ref.get((bid, side, "2k"), np.nan)
+        x = xrv_of.get((bid, side), (np.nan, np.nan))
+        info["xrv100"], info["xrv100_2k"] = float(x[0]), float(x[1])
         if len(ref) and np.isfinite(info["xrv100"]):
             # share of qualified hitters who would do better against this arsenal: 50 = average hitter,
             # higher = better matchup for the pitcher

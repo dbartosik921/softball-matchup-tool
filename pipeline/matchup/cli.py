@@ -6,6 +6,7 @@
   python -m matchup ingest a.csv b.csv      # same as sync, for specific files
   python -m matchup league                  # league calibration: run values, hard-hit line, baselines
   python -m matchup matchup --pitcher "Burnham, Payton" --team AUB_TIG_SB   # HTML matchup report
+  python -m matchup backtest [--tune] [--apply]   # does the model predict later games? tune its settings
 
 Damaged player IDs are recovered from the player registry when REGISTRY_DATABASE_URL is set.
 The same game exported more than once is loaded once (the most complete copy).
@@ -242,9 +243,62 @@ def cmd_sync(args, conn) -> int:
     return 1 if stats["failed"] else 0
 
 
+def cmd_backtest(args, conn) -> int:
+    import time
+    from datetime import date
+
+    from . import settings
+    from . import validate as V
+    from .data import load_pitches
+
+    current = settings.load()
+    df = load_pitches(conn, use_cache=not args.refresh)
+    cfg = V.Config(n_pitchers=args.pitchers, split=date.fromisoformat(args.split) if args.split else None)
+    t0 = time.time()
+    prep = V.prepare(df, cfg)
+    out_dir = Path(__file__).resolve().parents[1] / "reports"
+    out_dir.mkdir(exist_ok=True)
+    lines = []
+
+    def log(msg=""):
+        print(msg)
+        lines.append(msg)
+
+    if args.tune:
+        best, trials = V.tune(prep, current, log=log)
+        pd_ = __import__("pandas")
+        pd_.DataFrame(trials).to_csv(out_dir / "backtest_trials.csv", index=False)
+        log(f"best settings: {V.json_safe(best)}")
+        values = best
+    else:
+        values = current
+    pred, sc = V.run_with(prep, values, verbose=True)
+    base = V.run_with(prep, dict(settings.DEFAULTS))[1] if args.tune else None
+    settings.apply(values)
+    log(V.describe(sc, f"\nAll hitters (settings: {V.json_safe(values)})"))
+    hist_only = V.score(pred, prep.league.hard_hit_mph, boot=cfg.boot, history_only=True)
+    log(V.describe(hist_only, "\nHitters with history vs that pitcher hand and side"))
+    if base is not None:
+        log(f"\nobjective: defaults {V.objective(base):+.3f} -> tuned {V.objective(sc):+.3f}")
+    verdicts = {r["metric"]: V.verdict(r) for _, r in sc.iterrows()}
+    log(f"\n{len(prep.arsenals)} pitchers, {len(pred):,} test pitches, {time.time() - t0:.0f}s")
+    path = out_dir / f"backtest_{date.today():%Y%m%d}.txt"
+    path.write_text("\n".join(lines))
+    print(f"saved {path}")
+    if args.apply:
+        saved = settings.save(values, verdicts)
+        print(f"applied: {saved} (reports use these settings from now on)")
+    elif args.tune:
+        print("not applied: re-run with --tune --apply to use these settings")
+    return 0
+
+
 def cmd_model(args, conn) -> int:
+    from . import settings
     from .calibrate import calibrate, describe
     from .data import load_pitches
+
+    settings.load()
 
     df = load_pitches(conn, use_cache=not args.refresh)
     regular = df[df["game_type"].fillna("regular") == "regular"]
@@ -299,6 +353,12 @@ def main(argv: list[str] | None = None) -> int:
     mp.add_argument("--team", required=True, help="opponent team code, e.g. AUB_TIG_SB")
     mp.add_argument("--refresh", action="store_true")
     mp.add_argument("--no-open", action="store_true", help="don't open the report in the browser")
+    bp = sub.add_parser("backtest")
+    bp.add_argument("--pitchers", type=int, default=60, help="pitchers to test (most pitches after the split first)")
+    bp.add_argument("--split", help="split date YYYY-MM-DD (default: 60%% of the season before it)")
+    bp.add_argument("--tune", action="store_true", help="search for better settings (about 15x longer)")
+    bp.add_argument("--apply", action="store_true", help="save the tuned settings for future reports")
+    bp.add_argument("--refresh", action="store_true")
     args = ap.parse_args(argv)
 
     if args.cmd == "check":
@@ -315,6 +375,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.cmd in ("league", "matchup"):
             return cmd_model(args, conn)
+        if args.cmd == "backtest":
+            return cmd_backtest(args, conn)
         return cmd_sync(args, conn)
     finally:
         conn.close()
