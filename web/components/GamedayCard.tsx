@@ -10,7 +10,7 @@ import { num, runsStyle, sampleWeight, scoreStyle, signed } from "@/lib/format";
 import { abbrevs, mix } from "@/lib/pitches";
 import { saveNote } from "@/app/gameday/actions";
 
-const NCOL = 5;   // columns per pitcher: Adv, xRV, Fit, Sample, Plan
+const NCOL = 4;   // columns per pitcher: Adv, xRV, Fit, Sample
 
 const FIT_NAMES: Record<string, string> = { whiff: "whiff", called_strike: "called strike", chase: "chase", hard_hit: "hard hit" };
 
@@ -96,7 +96,7 @@ export default function GamedayCard({ pt, bt, data, slotPa, fitParts, initial, l
   };
   const cells = (id: string) => data.pitchers.map((p) => <Cells key={p.id} c={data.cells[id]?.[p.id]}
     href={`/matchup?pitcher=${encodeURIComponent(p.id)}&team=${encodeURIComponent(bt)}&batter=${encodeURIComponent(id)}`}
-    parts={parts} ab={ab.get(p.id)!} />);
+    parts={parts} />);
   const blanks = () => data.pitchers.map((p) => <Fragment key={p.id}><td className="g0" />{Array.from({ length: NCOL - 1 }, (_, i) => <td key={i} />)}</Fragment>);
   const note = (id: string) => (
     <Note id={id} text={notes[id] ?? ""} enabled={data.notesEnabled}
@@ -125,7 +125,6 @@ export default function GamedayCard({ pt, bt, data, slotPa, fitParts, initial, l
             <th title="Expected runs per 100 pitches vs her arsenal (+ favors hitter)">xRV</th>
             <th title={parts ? `Shape fit (${parts})` : "Shape fit: no validated components"}>Fit</th>
             <th title="Similar pitches seen (usage-weighted)">Sample</th>
-            <th className="l" title="Attack / put-away: her pitch with the lowest expected runs vs this hitter, then her two-strike pitch this hitter misses most (pitches she throws 10%+). Second line: head-to-head history.">Plan</th>
           </Fragment>))}
       </tr>
     </thead>
@@ -188,7 +187,7 @@ export default function GamedayCard({ pt, bt, data, slotPa, fitParts, initial, l
                 <td className="g0" style={scoreStyle(t.score)}>{t.score === null ? "–" : t.score.toFixed(0)}</td>
                 <td>{signed(t.xrv)}</td>
                 <td style={parts ? runsStyle(t.fit, 0.3) : undefined}>{parts ? signed(t.fit) : "–"}</td>
-                <td /><td />
+                <td />
               </Fragment>))}
           </tr>
           <tr className="gd-sec">
@@ -222,19 +221,17 @@ export default function GamedayCard({ pt, bt, data, slotPa, fitParts, initial, l
   );
 }
 
-function Cells({ c, href, parts, ab }: { c?: GamedayCell; href: string; parts: string; ab: Map<number, string> }) {
+function Cells({ c, href, parts }: { c?: GamedayCell; href: string; parts: string }) {
   if (!c) return <><td className="g0" title="No matchup published">–</td>{Array.from({ length: NCOL - 1 }, (_, i) => <td key={i} />)}</>;
   const conf = c.conf === "Medium" ? "Med" : (c.conf ?? "–");
   const k = sampleWeight(c.conf);
-  const pitch = (cid: number | null) => (cid === null ? "–" : ab.get(cid) ?? "?");
   return (
     <>
       <td className="g0" style={scoreStyle(c.score, k)}><Link href={href}><b>{num(c.score)?.toFixed(0) ?? "–"}</b></Link></td>
       <td>{signed(c.xrv100)}</td>
       <td style={parts ? runsStyle(c.fit100, 0.3, k) : undefined}>{parts ? signed(c.fit100) : "–"}</td>
-      <td className={`smp conf-${c.conf}`}>{conf} {num(c.sim) !== null ? Math.round(c.sim as number) : ""}</td>
-      <td className="l plan" title={c.directPa ? `Vs her: ${c.directPa} PA (${c.directLine})` : "Hasn't faced her"}>
-        <b>{pitch(c.attack)}</b> / {pitch(c.putaway)}
+      <td className={`smp conf-${c.conf}`} title={c.directPa ? `Vs her: ${c.directPa} PA (${c.directLine})` : undefined}>
+        {conf} {num(c.sim) !== null ? Math.round(c.sim as number) : ""}
         {c.directPa > 0 && <div className="h2h">{c.directPa} PA · {c.directLine.replace(", 0 BB/HBP", "").replace(" BB/HBP", " BB")}</div>}
       </td>
     </>
