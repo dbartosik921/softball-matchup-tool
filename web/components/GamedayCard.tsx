@@ -160,25 +160,23 @@ export default function GamedayCard({ pt, bt, data, slotPa, fitParts, initial, l
                 <td />
               </Fragment>))}
           </tr>
+          <tr className="gd-sec">
+            <td className="stick"><b>Not in the lineup ({others.length})</b></td>
+            <td colSpan={1 + 4 * data.pitchers.length} className="l note">
+              {others.length ? "alphabetical" : "everyone on the roster is in the lineup"}</td>
+          </tr>
+          {others.map((r) => (
+            <tr key={r.id}>
+              <td className="stick">{r.name} <span className="note">{byId.get(r.id)?.pa ?? 0} PA</span></td>
+              <td className="l">{bats(r.id)}</td>
+              {cells(r.id)}
+            </tr>))}
         </tbody>
       </table></div>
 
       </div>
 
       <div className="noprint">
-      <h2>Not in the lineup ({others.length})</h2>
-      {others.length ? (
-        <div className="wrap"><table className="gd">
-          {head("Batter")}
-          <tbody>{others.map((r) => (
-            <tr key={r.id}>
-              <td className="stick">{r.name} <span className="note">{byId.get(r.id)?.pa ?? 0} PA</span></td>
-              <td className="l">{bats(r.id)}</td>
-              {cells(r.id)}
-            </tr>))}</tbody>
-        </table></div>
-      ) : <p className="note">Everyone on the roster is in the lineup.</p>}
-
       <p className="note"><b>Adv</b> = pitcher advantage, a percentile among qualified D1 hitters (50 = average, higher = better for the pitcher).{" "}
         <b>xRV</b> = expected runs per 100 pitches vs her arsenal (+ favors the hitter). <b>Fit</b> = Shape fit, the matchup without the
         hitter&apos;s overall talent ({parts || "hidden: nothing validated"}; negative / blue = she handles these shapes worse than usual).{" "}

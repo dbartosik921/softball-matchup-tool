@@ -46,6 +46,7 @@ nav.tabs a.on{color:var(--ink);border-bottom-color:var(--accent)}
 .gd .stick{position:sticky;left:0;z-index:2;background:var(--bg);text-align:left;min-width:210px}
 .gd .stick select{width:100%;padding:5px 6px}
 .gd tr.total td{border-top:2px solid var(--ink2);font-weight:600}
+.gd tr.gd-sec td{padding-top:18px;border-bottom:2px solid var(--line)}
 .gd td.smp{color:var(--ink2);font-size:12px}
 .toolbar{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:12px 0}
 button.ghost{background:none;color:var(--ink);border:1px solid var(--line)}
@@ -78,6 +79,10 @@ svg.zone .zone-na{font-size:11px;fill:var(--ink2)}
   html,body{background:#fff;color:#000}
   .print-only{display:block}
   .gd-title{font-size:13px;margin:0 0 4px}
+  .gd tr.gd-sec td{padding-top:10px}
+  .gd td.stick,.gd .stick select{font-size:11px}
+  .gd td.stick .note{font-size:9px}
+  .gd-front table.gd tr{break-inside:avoid}
   .gd-front{page:gdfront}
   .backpage{page:gdback;break-before:page;margin:0}
   .bp-head h2{font-size:13px}
