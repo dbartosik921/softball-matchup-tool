@@ -92,3 +92,14 @@ svg.zone .zone-na{font-size:11px;fill:var(--ink2)}
   table.bp tr{break-inside:avoid}
   main{padding:0}
 }
+
+/* Gameday: arsenal mix, plan column, coach notes, tendencies */
+.gd th .mix{font-size:10px;font-weight:400;color:var(--ink2);white-space:nowrap}
+.gd td.plan{font-size:12px;white-space:nowrap}
+.gd td.plan .h2h{font-size:10px;color:var(--ink2)}
+.gd td.mixcell{font-size:11px;color:var(--ink2);text-align:center}
+.gd tbody.tend td{padding-top:3px;padding-bottom:3px}
+.cnote{font-size:11px;color:var(--ink2);font-style:italic;white-space:normal;max-width:260px;display:flex;gap:6px;align-items:baseline}
+.cnote button.link{font-size:11px;font-style:normal}
+.note-edit input{width:100%;font-size:12px;padding:4px 6px;margin-top:3px}
+@media print{.gd th .mix{font-size:8px}.gd td.plan .h2h{font-size:8px}.cnote{font-size:9px;max-width:none}}

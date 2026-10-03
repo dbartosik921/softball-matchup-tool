@@ -28,7 +28,7 @@ class Cluster:
     label: str
     n: int
     share: float
-    usage: dict[str, float]          # 'L', 'R', 'L2K', 'R2K' -> share of pitches to that batter side (count)
+    usage: dict[str, float]          # side + situation ('L', 'R2K', 'LFP' first pitch, 'RBH' behind) -> share
     means: dict[str, float]          # display metrics
     tag_mix: dict[str, float]
 
@@ -147,13 +147,17 @@ def fit_arsenal(pitches: pd.DataFrame, lg, weights: np.ndarray | None = None, se
     order = t.groupby("cluster")["rel_speed"].mean().sort_values(ascending=False).index
     remap = {old: new for new, old in enumerate(order)}
     t["cluster"] = t["cluster"].map(remap)
+    balls = pd.to_numeric(t["balls"], errors="coerce") if "balls" in t else pd.Series(np.nan, index=t.index)
+    strikes = pd.to_numeric(t["strikes"], errors="coerce") if "strikes" in t else pd.Series(np.nan, index=t.index)
+    situations = {"": pd.Series(True, index=t.index), "2K": t["is_two_strike"].astype(bool),
+                  "FP": (balls == 0) & (strikes == 0), "BH": balls > strikes}
     for cid, g in t.groupby("cluster"):
         usage = {}
         for side in ("L", "R"):
-            for two in (False, True):
-                sel = t[(t["b_side"] == side) & (t["is_two_strike"] if two else True)]
+            for key, mask in situations.items():   # '' all counts, 2K two strikes, FP first pitch, BH behind
+                sel = t[(t["b_side"] == side) & mask]
                 tot = sel["w"].sum()
-                usage[side + ("2K" if two else "")] = float(g.loc[g.index.intersection(sel.index), "w"].sum() / tot) if tot else 0.0
+                usage[side + key] = float(g.loc[g.index.intersection(sel.index), "w"].sum() / tot) if tot else 0.0
         m = {c: float(g[c].mean()) for c in ("rel_speed", "induced_vert_break", "hb_arm", "spin_rate",
                                                 "vert_appr_angle", "vaa_adj", "rel_height", "rel_side_arm")}
         tags = g["tagged_pitch_type"].where(~g["tagged_pitch_type"].isin(IGNORE_TAGS)).value_counts(normalize=True)

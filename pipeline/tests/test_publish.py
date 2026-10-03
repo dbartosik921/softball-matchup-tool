@@ -81,3 +81,39 @@ def test_publish_round_trip(league, transport, request):
     assert len(z) == 4 and len(z[0]) == 25 and len(z[1]) == 25 and float(ip) > 0
     roster = team[1] if isinstance(team[1], list) else json.loads(team[1])
     assert all("ab" in r for r in roster) and any(r["ab"] > 0 for r in roster)
+
+
+@pytest.mark.skipif(not URL, reason="TEST_DATABASE_URL not set")
+def test_plan_pitches_and_append(league):
+    df, lg, hist = league
+    reset = db.TcpConn(URL)
+    reset.query("drop schema public cascade")
+    reset.query("create schema public")
+    reset.close()
+    conn = db.TcpConn(URL)
+    db.migrate(conn)
+    # full publish with a high bar: opponent pitchers are left out ...
+    out = publish(conn, df, lg, hist, "UNI_ARK_SB", min_pitches=100_000, log=lambda m: None)
+    assert out["pitchers"] == 3
+    rid = out["run_id"]
+    # ... then --opponent AUB --append adds AUB's staff to the same run, nobody else
+    add = publish(conn, df, lg, hist, "UNI_ARK_SB", min_pitches=100_000, focus=["AUB"], append=True, log=lambda m: None)
+    assert add["run_id"] == rid and add["pitchers"] == 3
+    teams = {r[0] for r in conn.query("select team from pub_pitchers where run_id = %s and not is_home", (rid,))}
+    assert teams == {"AUB_TIG_SB"}
+    # appending again adds nothing
+    assert publish(conn, df, lg, hist, "UNI_ARK_SB", min_pitches=100_000, focus=["AUB"], append=True,
+                   log=lambda m: None)["pitchers"] == 0
+    # plan pitches are her cluster ids
+    meta = conn.query("select meta from pub_runs where run_id = %s", (rid,))[0][0]
+    meta = meta if isinstance(meta, dict) else json.loads(meta)
+    k = meta["summary_keys"]
+    rows = conn.query("select m.summary, p.arsenal from pub_matchups m join pub_pitchers p using (run_id, pitcher_tm_id) "
+                      "where m.run_id = %s and p.is_home", (rid,))
+    for s, ars in rows[:20]:
+        s = s if isinstance(s, list) else json.loads(s)
+        ars = ars if isinstance(ars, list) else json.loads(ars)
+        cids = {c["cid"] for c in ars}
+        assert s[k.index("attack")] in cids and s[k.index("putaway")] in cids
+        assert all({"LFP", "RBH", "L2K"} <= set(c["usage"]) for c in ars)
+    conn.close()

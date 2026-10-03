@@ -310,7 +310,8 @@ def cmd_model(args, conn) -> int:
         home = args.home or os.environ.get("HOME_TEAM")
         if not home:
             raise SystemExit("Which team is home? Use --home TEAM_CODE (or HOME_TEAM=... in pipeline/.env).")
-        publish(conn, df, lg, hist, home, min_pitches=args.min_pitches, opponents=not args.no_opponents)
+        publish(conn, df, lg, hist, home, min_pitches=args.min_pitches, opponents=not args.no_opponents,
+                focus=args.opponent or [], focus_min=args.opponent_min, append=args.append)
         return 0
     if args.cmd == "league":
         print(describe(lg))
@@ -346,6 +347,26 @@ def cmd_model(args, conn) -> int:
     return 0
 
 
+def cmd_nightly(args, conn) -> int:
+    """sync the folder; publish only if new pitches arrived (or --force / nothing published yet)."""
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    print(f"=== nightly {datetime.now():%Y-%m-%d %H:%M} ===")
+    count = lambda: int(conn.query("select count(*) from pitches")[0][0])  # noqa: E731
+    before = count()
+    rc = cmd_sync(SimpleNamespace(paths=[args.folder]), conn)
+    after = count()
+    published = conn.query("select count(*) from pub_runs where complete")[0][0]
+    if after == before and int(published) and not args.force:
+        print("no new pitches: publish skipped")
+        return rc
+    print(f"{after - before:,} new pitches: publishing")
+    pub = SimpleNamespace(cmd="publish", refresh=False, home=args.home, min_pitches=args.min_pitches,
+                          no_opponents=False, opponent=args.opponent, opponent_min=60, append=False)
+    return cmd_model(pub, conn) or rc
+
+
 def main(argv: list[str] | None = None) -> int:
     _load_env()
     ap = argparse.ArgumentParser(prog="matchup")
@@ -365,7 +386,24 @@ def main(argv: list[str] | None = None) -> int:
     pp.add_argument("--home", help="your team code (default: HOME_TEAM in .env)")
     pp.add_argument("--min-pitches", type=int, default=150, help="opponent pitchers need this many tracked pitches")
     pp.add_argument("--no-opponents", action="store_true", help="only your own pitchers (fast)")
+    pp.add_argument("--opponent", action="append", metavar="TEAM",
+                    help="this week's opponent: include its pitchers with fewer tracked pitches (repeatable)")
+    pp.add_argument("--opponent-min", type=int, default=60, help="tracked pitches needed for --opponent pitchers")
+    pp.add_argument("--append", action="store_true",
+                    help="add the --opponent pitchers to the latest publish instead of rebuilding everything")
     pp.add_argument("--refresh", action="store_true")
+    np_ = sub.add_parser("nightly", help="sync a folder, then publish if new games arrived (what the schedule runs)")
+    np_.add_argument("--folder", required=True)
+    np_.add_argument("--home", required=True)
+    np_.add_argument("--opponent", action="append", metavar="TEAM")
+    np_.add_argument("--min-pitches", type=int, default=150)
+    np_.add_argument("--force", action="store_true", help="publish even if nothing new was synced")
+    sp = sub.add_parser("schedule", help="install / remove the nightly refresh on this Mac (launchd)")
+    sp.add_argument("--folder", help="your Trackman folder")
+    sp.add_argument("--home", help="your team code")
+    sp.add_argument("--at", default="03:15", help="time of day, HH:MM (default 03:15)")
+    sp.add_argument("--opponent", action="append", metavar="TEAM")
+    sp.add_argument("--remove", action="store_true")
     bp = sub.add_parser("backtest")
     bp.add_argument("--pitchers", type=int, default=60, help="pitchers to test (most pitches after the split first)")
     bp.add_argument("--split", help="split date YYYY-MM-DD (default: 60%% of the season before it)")
@@ -376,6 +414,13 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "check":
         return cmd_check(args)
+    if args.cmd == "schedule":
+        from . import schedule
+        if args.remove:
+            return schedule.remove()
+        if not (args.folder and args.home):
+            raise SystemExit("schedule needs --folder and --home (or --remove)")
+        return schedule.install(args.folder, args.home, args.at, args.opponent or [])
 
     from . import db
 
@@ -390,6 +435,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_model(args, conn)
         if args.cmd == "backtest":
             return cmd_backtest(args, conn)
+        if args.cmd == "nightly":
+            return cmd_nightly(args, conn)
         return cmd_sync(args, conn)
     finally:
         conn.close()

@@ -33,7 +33,7 @@ def conn(request):
         request.addfinalizer(srv.shutdown)
     request.addfinalizer(c.close)
     assert db.migrate(c) == ["001_init.sql", "002_dedup.sql", "003_game_type.sql", "004_publish.sql",
-                                 "005_gameday_back.sql"]
+                                 "005_gameday_back.sql", "006_coach_notes.sql"]
     return c
 
 

@@ -36,7 +36,8 @@ export default async function GamedayPage({ searchParams }: { searchParams: SP }
           : !data ? <div className="empty">{bt} isn&apos;t in the latest publish.</div>
           : !data.pitchers.length ? <div className="empty">No published pitchers for {pt}.</div>
           : <GamedayCard key={`${pt}|${bt}`} pt={pt} bt={bt} data={data} slotPa={run.meta.slot_pa}
-              fitParts={run.meta.fit_components} initial={lineup} leagueOps={run.meta.league_ops} />}
+              fitParts={run.meta.fit_components} initial={lineup} leagueOps={run.meta.league_ops}
+              homePitching={pt === home} />}
       </main>
     </>
   );

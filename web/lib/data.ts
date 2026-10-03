@@ -83,15 +83,23 @@ export async function matchups(r: Run, pitcherId: string, batterIds: string[]): 
 }
 
 // ---- Gameday card: every pitcher of one team x every hitter of another, four numbers per pair ----
-export type GamedayCell = { score: Num; xrv100: Num; fit100: Num; sim: Num; conf: string | null; side: string | null };
+export type GamedayCell = {
+  score: Num; xrv100: Num; fit100: Num; sim: Num; conf: string | null; side: string | null;
+  attack: Num; putaway: Num;            // her cluster ids: best pitch vs this hitter, two-strike put-away
+  directPa: number; directLine: string; // head-to-head history
+};
+export type PitchUse = { cid: number; label: string; usage: Record<string, number> };
 /** 5x5 OPS grids (pitcher's view, row 0 = top): [ops_all, pa_all, ops_changeup | null, pa_changeup | null] */
 export type Zones = [Num[], Num[], Num[] | null, Num[] | null];
 export type Gameday = {
-  pitchers: { id: string; name: string; throws: string; n: number; ip: number | null; hasChangeup: boolean }[];
+  pitchers: { id: string; name: string; throws: string; n: number; ip: number | null; hasChangeup: boolean;
+    pitches: PitchUse[] }[];
   roster: RosterEntry[];
   lastLineup: string[];
   cells: Record<string, Record<string, GamedayCell>>;   // batter id -> pitcher id -> numbers
   zones: Record<string, Record<string, Zones | null>>;  // batter id -> pitcher id -> back-page grids
+  notes: Record<string, string>;                        // batter id -> coach note
+  notesEnabled: boolean;                                // false until migration 006 has run
 };
 
 export async function pitchingTeams(run: Run): Promise<string[]> {
@@ -108,7 +116,9 @@ export async function gameday(run: Run, pitchingTeam: string, battingTeam: strin
   const ps = await db().query(
     `select pitcher_tm_id as id, pitcher_name as name, throws, n_pitches as n,
             (to_jsonb(p) ->> 'ip')::real as ip,  -- to_jsonb: works before migration 005 too (null)
-            exists (select 1 from jsonb_array_elements(arsenal) c where c->>'label' ilike 'change%') as has_ch
+            exists (select 1 from jsonb_array_elements(arsenal) c where c->>'label' ilike 'change%') as has_ch,
+            (select jsonb_agg(jsonb_build_object('cid', c->'cid', 'label', c->'label', 'usage', c->'usage'))
+               from jsonb_array_elements(arsenal) c) as pitches
        from pub_pitchers p
       where run_id = $1 and (case when $2::text = $3::text then is_home else team = $2::text and not is_home end)
       order by 5 desc nulls last, n_pitches desc`,
@@ -129,12 +139,38 @@ export async function gameday(run: Run, pitchingTeam: string, battingTeam: strin
     (cells[r.batter_tm_id] ??= {})[r.pitcher_tm_id] = {
       score: n(s[at("score")]), xrv100: n(s[at("xrv100")]), fit100: n(s[at("fit100")]),
       sim: n(s[at("sim_pitches")]), conf: (s[at("confidence")] as string) ?? null, side: r.side,
+      attack: n(s[at("attack")]), putaway: n(s[at("putaway")]),
+      directPa: n(s[at("direct_pa")]) ?? 0, directLine: (s[at("direct_line")] as string) ?? "",
     };
     (zones[r.batter_tm_id] ??= {})[r.pitcher_tm_id] = (r.zones as Zones | null) ?? null;
   }
+  const { notes, enabled } = await coachNotes(ids);
   return {
     pitchers: ps.map((p) => ({ id: p.id, name: p.name, throws: p.throws, n: p.n,
-      ip: p.ip === null || p.ip === undefined ? null : Number(p.ip), hasChangeup: Boolean(p.has_ch) })),
-    roster: t.roster, lastLineup: t.lineup, cells, zones,
+      ip: p.ip === null || p.ip === undefined ? null : Number(p.ip), hasChangeup: Boolean(p.has_ch),
+      pitches: (p.pitches ?? []) as PitchUse[] })),
+    roster: t.roster, lastLineup: t.lineup, cells, zones, notes, notesEnabled: enabled,
   };
+}
+
+// ---- Coach notes (migration 006). Reads/writes degrade gracefully before the table exists. ----
+export async function coachNotes(ids: string[]): Promise<{ notes: Record<string, string>; enabled: boolean }> {
+  if (!ids.length) return { notes: {}, enabled: true };
+  try {
+    const rows = await db().query(`select batter_tm_id, note from coach_notes where batter_tm_id = any($1::text[])`, [ids]);
+    return { notes: Object.fromEntries(rows.map((r) => [r.batter_tm_id, r.note])), enabled: true };
+  } catch {
+    return { notes: {}, enabled: false };
+  }
+}
+
+export async function saveCoachNote(batterId: string, note: string): Promise<void> {
+  const text = note.trim().slice(0, 200);
+  if (!text) {
+    await db().query(`delete from coach_notes where batter_tm_id = $1`, [batterId]);
+    return;
+  }
+  await db().query(
+    `insert into coach_notes (batter_tm_id, note) values ($1, $2)
+     on conflict (batter_tm_id) do update set note = excluded.note, updated_at = now()`, [batterId, text]);
 }

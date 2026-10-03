@@ -101,6 +101,18 @@ pitches) vs your hitters, then writes them to the `pub_*` tables. The site (`web
 complete publish; re-run after each `sync`. It also stores innings pitched, at-bats and the Gameday back-page
 location zones (`matchup/zones.py`: OPS per 5x5 cell vs similar pitches, shrunk per cell; not backtested). The team code accepts a unique fragment (`--home ARK`).
 
+Focused opponent and nightly refresh:
+
+```bash
+python -m matchup publish --opponent AUB                     # full publish; AUB pitchers need only 60 tracked pitches
+python -m matchup publish --opponent AUB --append            # add AUB's pitchers to the current publish (minutes)
+python -m matchup schedule --folder ~/Trackman --home ARK    # nightly at 03:15: sync, then publish if anything new
+python -m matchup schedule --remove
+```
+
+`schedule` installs a launchd job on the Mac (runs on wake if the Mac slept through 03:15); it needs
+`DATABASE_URL` saved in `pipeline/.env`. Log: `~/Library/Logs/softball-matchup-nightly.log`.
+
 ### Backtest (validation)
 
 ```bash

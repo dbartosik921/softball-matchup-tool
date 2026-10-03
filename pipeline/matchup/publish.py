@@ -29,7 +29,7 @@ from .run import build_arsenal
 BATCH_ROWS = 400
 SUMMARY_KEYS = [
     "score", "xrv100", "xrv100_2k", "fit100", "fit100_2k", "confidence", "sim_pitches", "sim_pitches_2k",
-    "pitches_vs_hand", "direct_pa", "direct_line",
+    "pitches_vs_hand", "direct_pa", "direct_line", "attack", "putaway",
     *[f"{p}{m}{s}" for m in ("whiff", "chase", "called_strike", "hard_hit", "ops", "rv")
       for p in ("", "pop_") for s in ("", "_2k")],
 ]
@@ -93,6 +93,24 @@ def _zones_json(z: dict | None):
     return [r(z["all"], 3), r(z["pa"], 1), r(z["ch"], 3), r(z["pa_ch"], 1)]
 
 
+PLAN_MIN_USAGE = 0.10   # a pitch she throws at least this often in the situation
+
+
+def plan_pitches(d: pd.DataFrame) -> dict:
+    """Cluster ids for the card's plan: attack = her pitch with the lowest expected runs vs this hitter
+    (all counts); put-away = her two-strike pitch this hitter misses most. Only pitches she actually uses."""
+    out = {"attack": None, "putaway": None}
+    if not len(d):
+        return out
+    a = d[(d["split"] == "all") & (d["usage"] >= PLAN_MIN_USAGE)].dropna(subset=["rv"])
+    if len(a):
+        out["attack"] = int(a.loc[a["rv"].idxmin(), "cluster"])
+    k = d[(d["split"] == "2k") & (d["usage"] >= PLAN_MIN_USAGE)].dropna(subset=["whiff"])
+    if len(k):
+        out["putaway"] = int(k.loc[k["whiff"].idxmax(), "cluster"])
+    return out
+
+
 def matchup_rows(res, zones: dict | None = None) -> list[dict]:
     det = res.detail
     by = det.groupby("batter_tm_id").indices if len(det) else {}
@@ -101,6 +119,7 @@ def matchup_rows(res, zones: dict | None = None) -> list[dict]:
         bid = r["batter_tm_id"]
         d = det.iloc[by[bid]] if bid in by else det.iloc[:0]
         d = d[d["side"] == r["side"]] if len(d) else d
+        r = {**r, **plan_pitches(d)}
         out.append({
             "pitcher_tm_id": res.arsenal.pitcher_id, "batter_tm_id": bid, "batter_name": r.get("batter_name"),
             "batter_team": r.get("batter_team"), "side": r.get("side"),
@@ -123,7 +142,8 @@ class Plan:
     skipped: list[str] = field(default_factory=list)
 
 
-def plan(df_all: pd.DataFrame, hist: pd.DataFrame, home: str, min_pitches: int, opponents: bool = True) -> Plan:
+def plan(df_all: pd.DataFrame, hist: pd.DataFrame, home: str, min_pitches: int, opponents: bool = True,
+         focus: Iterable[str] = (), focus_min: int = 60) -> Plan:
     season = hist["season"].max()
     hs = hist[hist["season"] == season]
     teams = {t: g for t, g in hs.groupby("batter_team") if t}
@@ -132,7 +152,12 @@ def plan(df_all: pd.DataFrame, hist: pd.DataFrame, home: str, min_pitches: int, 
     counts = cur.groupby(["pitcher_tm_id", "pitcher_team"]).size().reset_index(name="n")
     counts = counts.sort_values("n").drop_duplicates("pitcher_tm_id", keep="last")
     home_p = counts[(counts["pitcher_team"] == home) & (counts["n"] >= 50)]
-    opp_p = counts[(counts["pitcher_team"] != home) & (counts["n"] >= min_pitches)] if opponents else counts.iloc[:0]
+    # --opponent teams (this week's opponents) get a lower bar so a lightly-used starter isn't missing
+    focus = set(focus)
+    from .arsenal import MIN_PITCHES
+    low = max(min(focus_min, min_pitches), MIN_PITCHES)     # below MIN_PITCHES an arsenal can't be described
+    need = np.where(counts["pitcher_team"].isin(focus), low, min_pitches)
+    opp_p = counts[(counts["pitcher_team"] != home) & (counts["n"] >= need)] if opponents else counts.iloc[:0]
     home_bat = list(dict.fromkeys(teams[home]["batter_tm_id"])) if home in teams else []
     all_bat = list(dict.fromkeys(hs["batter_tm_id"].dropna()))
     return Plan(home, season, teams, list(home_p.sort_values("n", ascending=False)["pitcher_tm_id"]),
@@ -209,11 +234,25 @@ def finish_run(conn, run_id: int) -> None:
     ])
 
 
+def latest_run(conn, home: str):
+    r = conn.query("select run_id, data_through::text from pub_runs where complete and home_team = %s "
+                   "order by run_id desc limit 1", (home,))
+    return (int(r[0][0]), r[0][1]) if r else None
+
+
 def publish(conn, df_all: pd.DataFrame, lg: League, hist: pd.DataFrame, home: str, min_pitches: int = 150,
-            opponents: bool = True, log: Callable[[str], None] = print) -> dict:
+            opponents: bool = True, log: Callable[[str], None] = print, focus: Iterable[str] = (),
+            focus_min: int = 60, append: bool = False) -> dict:
+    """Full publish (new run, replaces the old one), or with append=True: add the --opponent teams' pitchers
+    to the latest run in place (minutes instead of a full rebuild; refused if new games were synced since)."""
     regular = df_all[df_all["game_type"].fillna("regular") == "regular"]
     home = find_team(regular, home)
-    p = plan(df_all, hist, home, min_pitches, opponents)
+    focus = [find_team(regular, t) for t in focus]
+    if append and not focus:
+        raise SystemExit("--append needs at least one --opponent TEAM")
+    p = plan(df_all, hist, home, min_pitches, opponents, focus, focus_min)
+    if append:
+        return _append(conn, df_all, lg, hist, p, focus, log)
     if not p.home_pitchers and not p.opp_pitchers:
         raise SystemExit(f"No pitchers to publish for {home} in {p.season}.")
     log(f"{home} {p.season}: {len(p.home_pitchers)} home pitchers x {len(p.all_batters):,} hitters, "
@@ -230,11 +269,42 @@ def publish(conn, df_all: pd.DataFrame, lg: League, hist: pd.DataFrame, home: st
     run_id = start_run(conn, home, max(hist["game_date"]), meta)
     write_rows(conn, "pub_teams", run_id, team_rows(p))
 
+    jobs = [(pid, True) for pid in p.home_pitchers] + [(pid, False) for pid in p.opp_pitchers]
+    n_rows = _write_pitchers(conn, run_id, df_all, lg, hist, p, jobs, log)
+    finish_run(conn, run_id)
+    out = {"run_id": run_id, "pitchers": len(jobs) - len(p.skipped), "matchups": n_rows, "skipped": p.skipped}
+    log(f"published run {run_id}: {out['pitchers']} pitchers, {n_rows:,} pitcher-hitter matchups")
+    for s in p.skipped[:10]:
+        log(f"  skipped {s}")
+    return out
+
+
+def _append(conn, df_all, lg, hist, p: Plan, focus: list[str], log) -> dict:
+    cur = latest_run(conn, p.home)
+    if not cur:
+        raise SystemExit("Nothing published yet: run a full `publish` first.")
+    run_id, through = cur
+    if str(max(hist["game_date"])) != through:
+        raise SystemExit(f"New games since the last publish (data through {max(hist['game_date'])}, published {through}). "
+                         "Run a full `publish` instead (it includes --opponent).")
+    meta = conn.query("select meta from pub_runs where run_id = %s", (run_id,))[0][0]
+    meta = meta if isinstance(meta, dict) else json.loads(meta)
+    if meta.get("summary_keys") != SUMMARY_KEYS or meta.get("detail_keys") != DETAIL_KEYS:
+        raise SystemExit("The last publish was made by an older version: run a full `publish` instead.")
+    have = {r[0] for r in conn.query("select pitcher_tm_id from pub_pitchers where run_id = %s", (run_id,))}
+    team_of = df_all.drop_duplicates("pitcher_tm_id", keep="last").set_index("pitcher_tm_id")["pitcher_team"]
+    jobs = [(pid, False) for pid in p.opp_pitchers if team_of.get(pid) in focus and pid not in have]
+    log(f"adding {len(jobs)} {', '.join(focus)} pitchers to run {run_id}")
+    n_rows = _write_pitchers(conn, run_id, df_all, lg, hist, p, jobs, log)
+    log(f"added {len(jobs) - len(p.skipped)} pitchers, {n_rows:,} matchups")
+    return {"run_id": run_id, "pitchers": len(jobs) - len(p.skipped), "matchups": n_rows, "skipped": p.skipped}
+
+
+def _write_pitchers(conn, run_id, df_all, lg, hist, p: Plan, jobs, log) -> int:
     ctx = Context(hist, lg)
     season_rows = df_all[(df_all["season"] == p.season) & (df_all["game_type"].fillna("regular") == "regular")]
     ip = innings_pitched(season_rows)
     by_pitcher = df_all.groupby("pitcher_tm_id").indices
-    jobs = [(pid, True) for pid in p.home_pitchers] + [(pid, False) for pid in p.opp_pitchers]
     n_rows = 0
     for k, (pid, is_home) in enumerate(jobs, 1):
         mine = df_all.iloc[by_pitcher[pid]]
@@ -254,9 +324,4 @@ def publish(conn, df_all: pd.DataFrame, lg: League, hist: pd.DataFrame, home: st
         n_rows += len(rows)
         if is_home or k % 25 == 0 or k == len(jobs):
             log(f"  {k}/{len(jobs)} {a.pitcher_name} ({a.team}): {len(rows):,} hitters")
-    finish_run(conn, run_id)
-    out = {"run_id": run_id, "pitchers": len(jobs) - len(p.skipped), "matchups": n_rows, "skipped": p.skipped}
-    log(f"published run {run_id}: {out['pitchers']} pitchers, {n_rows:,} pitcher-hitter matchups")
-    for s in p.skipped[:10]:
-        log(f"  skipped {s}")
-    return out
+    return n_rows

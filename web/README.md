@@ -19,6 +19,10 @@ every opponent pitcher with 150+ tracked pitches vs the home team's hitters.
   batting order is set with 1-9 dropdowns (only that team's hitters; starts from their last lineup). Each cell shows
   Pitcher adv., xRV/100, Shape fit and Sample, with a PA-weighted lineup total per pitcher. Hitters not in the order
   are listed alphabetically below. The order is kept in the URL, so a card can be bookmarked or printed.
+  Each pitcher block also has **Plan** (attack pitch / two-strike put-away, plus head-to-head history),
+  her pitch mix vs L and R under her name, faint colours for low samples, and coach notes per hitter (saved in
+  Neon, printed on the card). When another team is pitching, a **Her tendencies** block shows her mix on the
+  first pitch, when behind and with two strikes.
   Coverage follows the publish: home pitchers vs any team, other teams' pitchers vs the home team only.
   **Printing** gives two pages for front/back: the card (letter landscape, scaled to fit) and a back page
   (letter portrait) with two 5x5 OPS zones per pitcher per hitter, vs pitches shaped like her arsenal and like
