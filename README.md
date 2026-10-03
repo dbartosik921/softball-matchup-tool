@@ -98,7 +98,8 @@ python -m matchup publish --no-opponents               # only your own staff (fa
 
 Precomputes every home pitcher vs every hitter in the latest season, and every opponent pitcher (150+ tracked
 pitches) vs your hitters, then writes them to the `pub_*` tables. The site (`web/`) always shows the latest
-complete publish; re-run after each `sync`. The team code accepts a unique fragment (`--home ARK`).
+complete publish; re-run after each `sync`. It also stores innings pitched, at-bats and the Gameday back-page
+location zones (`matchup/zones.py`: OPS per 5x5 cell vs similar pitches, shrunk per cell; not backtested). The team code accepts a unique fragment (`--home ARK`).
 
 ### Backtest (validation)
 

@@ -19,7 +19,7 @@ TEXT = ["pitch_uid", "game_uid", "season", "game_type", "top_bottom", "pitcher_t
         "pitcher_team", "p_throws", "batter_tm_id", "batter_name", "batter_team", "b_side", "tagged_pitch_type",
         "pitch_call", "kor_bb", "tagged_hit_type", "play_result", "hit_launch_conf", "pa_result",
         "home_team", "away_team"]
-INT = ["inning", "pa_of_inning", "pitch_of_pa", "pitch_no", "balls", "strikes", "outs", "runs_scored"]
+INT = ["inning", "pa_of_inning", "pitch_of_pa", "pitch_no", "balls", "strikes", "outs", "outs_on_play", "runs_scored"]
 FLOAT = ["rel_speed", "spin_rate", "rel_height", "rel_side", "extension", "induced_vert_break", "horz_break",
          "plate_loc_height", "plate_loc_side", "vert_appr_angle", "horz_appr_angle", "exit_speed", "launch_angle",
          "hb_arm", "rel_side_arm", "hb_in", "loc_in", "haa_in"]
@@ -67,7 +67,8 @@ def _select_cols() -> str:
 
 def load_pitches(conn, use_cache: bool = True, verbose: bool = True) -> pd.DataFrame:
     stamp = conn.query("select count(*), max(ingested_at)::text from pitches")[0]
-    stamp = [str(stamp[0]), str(stamp[1])]
+    # the column list is part of the key: adding a column to COLUMNS invalidates an old cache
+    stamp = [str(stamp[0]), str(stamp[1]), str(len(COLUMNS)) + ":" + ",".join(COLUMNS)[-60:]]
     CACHE_DIR.mkdir(exist_ok=True)
     cache, meta = CACHE_DIR / "pitches.pkl", CACHE_DIR / "pitches.json"
     if use_cache and cache.exists() and meta.exists() and json.loads(meta.read_text()) == stamp:

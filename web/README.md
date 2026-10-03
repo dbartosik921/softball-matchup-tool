@@ -20,6 +20,10 @@ every opponent pitcher with 150+ tracked pitches vs the home team's hitters.
   Pitcher adv., xRV/100, Shape fit and Sample, with a PA-weighted lineup total per pitcher. Hitters not in the order
   are listed alphabetically below. The order is kept in the URL, so a card can be bookmarked or printed.
   Coverage follows the publish: home pitchers vs any team, other teams' pitchers vs the home team only.
+  **Printing** gives two pages for front/back: the card (letter landscape, scaled to fit) and a back page
+  (letter portrait) with two 5x5 OPS zones per pitcher per hitter, vs pitches shaped like her arsenal and like
+  her changeup (pitcher's view; see `pipeline/matchup/zones.py`). The back page defaults to the team's top 4
+  pitchers by innings and lists the 1-9 order, then the most at-bats, up to 10 hitters.
 
 ## Environment variables (Vercel → Project → Settings → Environment Variables)
 

@@ -26,7 +26,7 @@ export default async function GamedayPage({ searchParams }: { searchParams: SP }
     <>
       <Header through={run.data_through} tab="gameday" />
       <main style={{ maxWidth: "none" }}>
-        <h1>Gameday card</h1>
+        <h1 className="noprint">Gameday card</h1>
         <GamedayPicker pTeams={pTeams} bTeams={bTeamsAll} home={home} pt={pt} bt={bt} />
         <p className="note noprint">{pt === home
           ? `${home} pitchers can face any team.`
@@ -36,7 +36,7 @@ export default async function GamedayPage({ searchParams }: { searchParams: SP }
           : !data ? <div className="empty">{bt} isn&apos;t in the latest publish.</div>
           : !data.pitchers.length ? <div className="empty">No published pitchers for {pt}.</div>
           : <GamedayCard key={`${pt}|${bt}`} pt={pt} bt={bt} data={data} slotPa={run.meta.slot_pa}
-              fitParts={run.meta.fit_components} initial={lineup} />}
+              fitParts={run.meta.fit_components} initial={lineup} leagueOps={run.meta.league_ops} />}
       </main>
     </>
   );

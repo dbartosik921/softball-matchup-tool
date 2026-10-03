@@ -32,7 +32,8 @@ def conn(request):
         c._endpoint = f"http://127.0.0.1:{srv.server_port}/sql"
         request.addfinalizer(srv.shutdown)
     request.addfinalizer(c.close)
-    assert db.migrate(c) == ["001_init.sql", "002_dedup.sql", "003_game_type.sql", "004_publish.sql"]
+    assert db.migrate(c) == ["001_init.sql", "002_dedup.sql", "003_game_type.sql", "004_publish.sql",
+                                 "005_gameday_back.sql"]
     return c
 
 

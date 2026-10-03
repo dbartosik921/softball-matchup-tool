@@ -75,3 +75,9 @@ def test_publish_round_trip(league, transport, request):
     d = [dict(zip(meta["detail_keys"], x)) for x in d]
     assert 0 <= s["score"] <= 100 and "fit100" in s and "whiff_2k" in s
     assert {x["split"] for x in d} == {"all", "2k"} and all("pop_whiff" in x for x in d)
+    z, ip = conn.query("select m.zones, p.ip from pub_matchups m join pub_pitchers p using (run_id, pitcher_tm_id) "
+                       "where m.run_id = %s and m.pitcher_tm_id = %s and m.batter_tm_id = %s", (rid, pid, lineup[0]))[0]
+    z = z if isinstance(z, list) else json.loads(z)
+    assert len(z) == 4 and len(z[0]) == 25 and len(z[1]) == 25 and float(ip) > 0
+    roster = team[1] if isinstance(team[1], list) else json.loads(team[1])
+    assert all("ab" in r for r in roster) and any(r["ab"] > 0 for r in roster)

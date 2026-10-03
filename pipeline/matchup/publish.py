@@ -21,7 +21,7 @@ from typing import Callable, Iterable
 import numpy as np
 import pandas as pd
 
-from . import engine, lineup as L, settings
+from . import engine, lineup as L, settings, zones
 from .calibrate import League
 from .engine import Context, evaluate
 from .run import build_arsenal
@@ -56,6 +56,17 @@ def _pack(d: dict, keys: Iterable[str]) -> list:
     return [_num(d.get(k), 3 if isinstance(d.get(k), float) and k not in ("score",) else 4) for k in keys]
 
 
+def league_ops(hist: pd.DataFrame) -> float | None:
+    e = hist[hist["pa_ending"].fillna(False).astype(bool)]
+    r = e["pa_result"]
+    hits = {"1B": 1, "2B": 2, "3B": 3, "HR": 4}
+    ab = r.isin(AB_RESULTS).sum()
+    on = r.isin(list(hits) + ["BB", "HBP"]).sum()
+    den = ab + r.isin(["BB", "HBP", "SF"]).sum()
+    tb = r.map(hits).fillna(0).sum()
+    return _num(on / den + tb / ab, 3) if ab and den else None
+
+
 def find_team(regular: pd.DataFrame, team: str) -> str:
     t = team.strip().upper()
     teams = sorted(set(regular["batter_team"].dropna()) | set(regular["pitcher_team"].dropna()))
@@ -74,7 +85,15 @@ def arsenal_json(a) -> list[dict]:
              "tag_mix": {k: _num(v, 3) for k, v in c.tag_mix.items()}} for c in a.clusters]
 
 
-def matchup_rows(res) -> list[dict]:
+def _zones_json(z: dict | None):
+    """[ops_all(25), pa_all(25), ops_ch(25) | null, pa_ch(25) | null] for the back-page strike zones."""
+    if not z:
+        return None
+    r = lambda a, nd: None if a is None else [_num(float(x), nd) for x in a]  # noqa: E731
+    return [r(z["all"], 3), r(z["pa"], 1), r(z["ch"], 3), r(z["pa_ch"], 1)]
+
+
+def matchup_rows(res, zones: dict | None = None) -> list[dict]:
     det = res.detail
     by = det.groupby("batter_tm_id").indices if len(det) else {}
     out = []
@@ -87,6 +106,7 @@ def matchup_rows(res) -> list[dict]:
             "batter_team": r.get("batter_team"), "side": r.get("side"),
             "summary": _pack(r, SUMMARY_KEYS),
             "detail": [_pack(x, DETAIL_KEYS) for x in d.to_dict("records")],
+            "zones": _zones_json((zones or {}).get(bid)),
         })
     return out
 
@@ -119,16 +139,36 @@ def plan(df_all: pd.DataFrame, hist: pd.DataFrame, home: str, min_pitches: int, 
                 list(opp_p.sort_values("n", ascending=False)["pitcher_tm_id"]), all_bat, home_bat)
 
 
+AB_RESULTS = {"1B", "2B", "3B", "HR", "OUT", "K", "FC", "ROE"}
+OUT_RESULTS = {"OUT", "SF", "SH", "FC"}
+
+
+def at_bats(g: pd.DataFrame) -> pd.Series:
+    e = g[g["pa_ending"].fillna(False).astype(bool)]
+    return e[e["pa_result"].isin(AB_RESULTS)].groupby("batter_tm_id").size()
+
+
+def innings_pitched(df: pd.DataFrame) -> pd.Series:
+    """Innings pitched per pitcher (outs / 3) from plate-appearance endings: Trackman's OutsOnPlay where
+    recorded (catches double plays), otherwise one out per out-type result; plus strikeouts."""
+    e = df[df["pa_ending"].fillna(False).astype(bool)]
+    oop = pd.to_numeric(e["outs_on_play"], errors="coerce") if "outs_on_play" in e else pd.Series(np.nan, index=e.index)
+    fallback = e["pa_result"].isin(OUT_RESULTS).astype(float)
+    outs = oop.where(oop.notna(), fallback) + (e["pa_result"] == "K").astype(float)
+    return outs.groupby(e["pitcher_tm_id"]).sum() / 3.0
+
+
 def team_rows(p: Plan) -> list[dict]:
     rows = []
     for t, g in p.teams.items():
         r = L.roster(g, t)
+        ab = at_bats(g)
         order, last = L.latest_lineup(g, t)
         rows.append({
             "team": t, "season": p.season, "last_game": str(last) if last is not None else None,
             "lineup": order,
-            "roster": [{"id": x.batter_tm_id, "name": x.batter_name, "pa": int(x.pa), "games": int(x.games),
-                        "last_game": str(x.last_game)} for x in r.itertuples()],
+            "roster": [{"id": x.batter_tm_id, "name": x.batter_name, "pa": int(x.pa), "ab": int(ab.get(x.batter_tm_id, 0)),
+                        "games": int(x.games), "last_game": str(x.last_game)} for x in r.itertuples()],
         })
     return rows
 
@@ -137,10 +177,10 @@ def team_rows(p: Plan) -> list[dict]:
 
 _INS = {
     "pub_pitchers": ("pitcher_tm_id text, pitcher_name text, team text, throws text, n_pitches int, "
-                     "is_home boolean, arsenal jsonb"),
+                     "is_home boolean, arsenal jsonb, ip real"),
     "pub_teams": "team text, season text, last_game date, lineup jsonb, roster jsonb",
     "pub_matchups": ("pitcher_tm_id text, batter_tm_id text, batter_name text, batter_team text, side text, "
-                     "summary jsonb, detail jsonb"),
+                     "summary jsonb, detail jsonb, zones jsonb"),
 }
 
 
@@ -185,11 +225,14 @@ def publish(conn, df_all: pd.DataFrame, lg: League, hist: pd.DataFrame, home: st
         "fit_components": list(engine.FIT_COMPONENTS), "validation": settings.validation(),
         "settings": {"bandwidth": engine.BANDWIDTH, "prior_scale": engine.PRIOR_SCALE},
         "summary_keys": SUMMARY_KEYS, "detail_keys": DETAIL_KEYS,
+        "league_ops": league_ops(hist), "zone_edges": {"x": list(zones.X_EDGES), "y": list(zones.Y_EDGES)},
     }
     run_id = start_run(conn, home, max(hist["game_date"]), meta)
     write_rows(conn, "pub_teams", run_id, team_rows(p))
 
     ctx = Context(hist, lg)
+    season_rows = df_all[(df_all["season"] == p.season) & (df_all["game_type"].fillna("regular") == "regular")]
+    ip = innings_pitched(season_rows)
     by_pitcher = df_all.groupby("pitcher_tm_id").indices
     jobs = [(pid, True) for pid in p.home_pitchers] + [(pid, False) for pid in p.opp_pitchers]
     n_rows = 0
@@ -198,13 +241,15 @@ def publish(conn, df_all: pd.DataFrame, lg: League, hist: pd.DataFrame, home: st
         try:
             a = build_arsenal(df_all, pid, lg, mine=mine)
             res = evaluate(hist, a, lg, p.all_batters if is_home else p.home_batters, ctx=ctx)
+            z = zones.zone_ops(ctx, a, lg, dict(zip(res.batters["batter_tm_id"], res.batters["side"])))
         except Exception as e:  # one odd pitcher (e.g. almost no tracked pitches) must not stop the publish
             p.skipped.append(f"{mine['pitcher_name'].iloc[-1]}: {e}")
             continue
         write_rows(conn, "pub_pitchers", run_id, [{
             "pitcher_tm_id": pid, "pitcher_name": a.pitcher_name, "team": a.team, "throws": a.throws,
-            "n_pitches": int(a.n_pitches), "is_home": is_home, "arsenal": arsenal_json(a)}])
-        rows = matchup_rows(res)
+            "n_pitches": int(a.n_pitches), "is_home": is_home, "arsenal": arsenal_json(a),
+            "ip": _num(float(ip.get(pid, 0.0)), 2)}])
+        rows = matchup_rows(res, z)
         write_rows(conn, "pub_matchups", run_id, rows)
         n_rows += len(rows)
         if is_home or k % 25 == 0 or k == len(jobs):

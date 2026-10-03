@@ -17,7 +17,7 @@ export type Run = {
   meta: {
     n_games: number; hard_hit_mph: number; season: string; slot_pa: number[];
     fit_components: string[]; validation: Record<string, string>;
-    summary_keys: string[]; detail_keys: string[];
+    summary_keys: string[]; detail_keys: string[]; league_ops?: number | null;
   };
 };
 export type Cluster = {
@@ -28,7 +28,7 @@ export type Pitcher = {
   pitcher_tm_id: string; pitcher_name: string; team: string | null; throws: "L" | "R";
   n_pitches: number; is_home: boolean; arsenal: Cluster[];
 };
-export type RosterEntry = { id: string; name: string; pa: number; games: number; last_game: string };
+export type RosterEntry = { id: string; name: string; pa: number; ab?: number; games: number; last_game: string };
 export type Team = { team: string; season: string; last_game: string | null; lineup: string[]; roster: RosterEntry[] };
 export type Num = number | null;
 export type Summary = Record<string, Num | string>;
@@ -84,11 +84,14 @@ export async function matchups(r: Run, pitcherId: string, batterIds: string[]): 
 
 // ---- Gameday card: every pitcher of one team x every hitter of another, four numbers per pair ----
 export type GamedayCell = { score: Num; xrv100: Num; fit100: Num; sim: Num; conf: string | null; side: string | null };
+/** 5x5 OPS grids (pitcher's view, row 0 = top): [ops_all, pa_all, ops_changeup | null, pa_changeup | null] */
+export type Zones = [Num[], Num[], Num[] | null, Num[] | null];
 export type Gameday = {
-  pitchers: { id: string; name: string; throws: string; n: number }[];
+  pitchers: { id: string; name: string; throws: string; n: number; ip: number | null; hasChangeup: boolean }[];
   roster: RosterEntry[];
   lastLineup: string[];
   cells: Record<string, Record<string, GamedayCell>>;   // batter id -> pitcher id -> numbers
+  zones: Record<string, Record<string, Zones | null>>;  // batter id -> pitcher id -> back-page grids
 };
 
 export async function pitchingTeams(run: Run): Promise<string[]> {
@@ -103,19 +106,23 @@ export async function gameday(run: Run, pitchingTeam: string, battingTeam: strin
   const t = await team(run.run_id, battingTeam);
   if (!t) return null;
   const ps = await db().query(
-    `select pitcher_tm_id as id, pitcher_name as name, throws, n_pitches as n from pub_pitchers
+    `select pitcher_tm_id as id, pitcher_name as name, throws, n_pitches as n,
+            (to_jsonb(p) ->> 'ip')::real as ip,  -- to_jsonb: works before migration 005 too (null)
+            exists (select 1 from jsonb_array_elements(arsenal) c where c->>'label' ilike 'change%') as has_ch
+       from pub_pitchers p
       where run_id = $1 and (case when $2::text = $3::text then is_home else team = $2::text and not is_home end)
-      order by n_pitches desc`,
+      order by 5 desc nulls last, n_pitches desc`,
     [run.run_id, pitchingTeam, run.home_team]);
   const ids = t.roster.map((r) => r.id);
   const pids = ps.map((p) => p.id as string);
   const k = run.meta.summary_keys;
   const at = (name: string) => k.indexOf(name);
   const rows = pids.length && ids.length ? await db().query(
-    `select pitcher_tm_id, batter_tm_id, side, summary from pub_matchups
+    `select pitcher_tm_id, batter_tm_id, side, summary, to_jsonb(m) -> 'zones' as zones from pub_matchups m
       where run_id = $1 and pitcher_tm_id = any($2::text[]) and batter_tm_id = any($3::text[])`,
     [run.run_id, pids, ids]) : [];
   const cells: Gameday["cells"] = {};
+  const zones: Gameday["zones"] = {};
   const n = (v: unknown) => (typeof v === "number" ? v : null);
   for (const r of rows) {
     const s = r.summary as unknown[];
@@ -123,9 +130,11 @@ export async function gameday(run: Run, pitchingTeam: string, battingTeam: strin
       score: n(s[at("score")]), xrv100: n(s[at("xrv100")]), fit100: n(s[at("fit100")]),
       sim: n(s[at("sim_pitches")]), conf: (s[at("confidence")] as string) ?? null, side: r.side,
     };
+    (zones[r.batter_tm_id] ??= {})[r.pitcher_tm_id] = (r.zones as Zones | null) ?? null;
   }
   return {
-    pitchers: ps.map((p) => ({ id: p.id, name: p.name, throws: p.throws, n: p.n })),
-    roster: t.roster, lastLineup: t.lineup, cells,
+    pitchers: ps.map((p) => ({ id: p.id, name: p.name, throws: p.throws, n: p.n,
+      ip: p.ip === null || p.ip === undefined ? null : Number(p.ip), hasChangeup: Boolean(p.has_ch) })),
+    roster: t.roster, lastLineup: t.lineup, cells, zones,
   };
 }

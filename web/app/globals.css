@@ -1,6 +1,6 @@
-:root{--bg:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--line:#e4e3df;--mid:#f0efec;--card:#fff;--accent:#9d2235;
+:root{--bg:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--line:#e4e3df;--mid:#f0efec;--card:#fff;--accent:#9d2235;--mid-rgb:236,235,231;
   --pitch:42,120,214;--hit:227,73,72}
-@media (prefers-color-scheme:dark){:root{--bg:#1a1a19;--ink:#fff;--ink2:#c3c2b7;--line:#383835;--mid:#262624;--card:#20201f;
+@media (prefers-color-scheme:dark){:root{--bg:#1a1a19;--ink:#fff;--ink2:#c3c2b7;--line:#383835;--mid:#262624;--card:#20201f;--mid-rgb:58,58,55;
   --accent:#e0606f;--pitch:57,135,229;--hit:230,103,103}}
 *{box-sizing:border-box}
 html,body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
@@ -50,3 +50,40 @@ nav.tabs a.on{color:var(--ink);border-bottom-color:var(--accent)}
 .toolbar{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:12px 0}
 button.ghost{background:none;color:var(--ink);border:1px solid var(--line)}
 @media print{.gd .stick select{appearance:none;border:0;padding:0;font-weight:600}.toolbar{display:none}}
+
+/* Gameday back page: 5x5 OPS zones. Sizes in inches so the printed page matches the screen. */
+.print-only{display:none}
+.backpage{margin-top:8px}
+.bp-head{display:flex;justify-content:space-between;gap:16px;align-items:flex-end;margin:8px 0}
+.bp-scale{display:flex;align-items:center;gap:2px;font-size:11px;color:var(--ink2);white-space:nowrap}
+.bp-scale i{display:inline-block;width:18px;height:12px}
+.bp-scale span{margin:0 4px}
+table.bp{width:auto;border-collapse:collapse}
+table.bp th,table.bp td{padding:0.02in 0.02in;border-bottom:1px solid var(--line);vertical-align:middle}
+table.bp th{font-size:11px;text-align:center}
+table.bp .bp-p{padding-left:0.09in;border-left:1px solid var(--line)}
+table.bp td.bp-name{width:0.95in;max-width:0.95in;white-space:normal;font-size:11px;line-height:1.2}
+svg.zone{display:block;width:0.8in;height:0.8in}
+svg.zone .zc{stroke:var(--bg);stroke-width:0.6}
+svg.zone .zone-k{fill:none;stroke:var(--ink);stroke-width:1.4}
+svg.zone .zone-empty{fill:none;stroke:var(--line);stroke-dasharray:3 3}
+svg.zone .zt{font-size:10.5px;fill:var(--ink2);font-variant-numeric:tabular-nums}
+svg.zone .zt.own{fill:var(--ink);font-weight:700}
+svg.zone .zone-na{font-size:11px;fill:var(--ink2)}
+@page gdfront{size:letter landscape;margin:0.3in}
+@page gdback{size:letter portrait;margin:0.3in}
+@media print{
+  *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  :root{--bg:#fff;--ink:#000;--ink2:#555;--line:#ccc;--mid-rgb:236,235,231;--pitch:42,120,214;--hit:227,73,72}
+  html,body{background:#fff;color:#000}
+  .print-only{display:block}
+  .gd-title{font-size:13px;margin:0 0 4px}
+  .gd-front{page:gdfront}
+  .backpage{page:gdback;break-before:page;margin:0}
+  .bp-head h2{font-size:13px}
+  .bp-head .note,.bp-foot{font-size:8px}
+  table.bp td.bp-name{font-size:9px}
+  table.bp th{font-size:9px}
+  table.bp tr{break-inside:avoid}
+  main{padding:0}
+}
