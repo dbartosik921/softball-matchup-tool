@@ -16,3 +16,5 @@ pipeline/reports/
 pipeline/.cache/
 *.tsbuildinfo
 next-env.d.ts
+web/AGENTS.md
+web/CLAUDE.md

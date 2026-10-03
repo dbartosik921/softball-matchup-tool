@@ -81,3 +81,51 @@ export async function matchups(r: Run, pitcherId: string, batterIds: string[]): 
     detail: (x.detail as unknown[][]).map((d) => zip(dk, d) as DetailRow),
   }));
 }
+
+// ---- Gameday card: every pitcher of one team x every hitter of another, four numbers per pair ----
+export type GamedayCell = { score: Num; xrv100: Num; fit100: Num; sim: Num; conf: string | null; side: string | null };
+export type Gameday = {
+  pitchers: { id: string; name: string; throws: string; n: number }[];
+  roster: RosterEntry[];
+  lastLineup: string[];
+  cells: Record<string, Record<string, GamedayCell>>;   // batter id -> pitcher id -> numbers
+};
+
+export async function pitchingTeams(run: Run): Promise<string[]> {
+  const rows = await db().query(
+    `select distinct coalesce(team, '') as team from pub_pitchers where run_id = $1 and team is not null order by 1`,
+    [run.run_id]);
+  const teams = rows.map((r) => r.team as string).filter(Boolean);
+  return [run.home_team, ...teams.filter((t) => t !== run.home_team)];
+}
+
+export async function gameday(run: Run, pitchingTeam: string, battingTeam: string): Promise<Gameday | null> {
+  const t = await team(run.run_id, battingTeam);
+  if (!t) return null;
+  const ps = await db().query(
+    `select pitcher_tm_id as id, pitcher_name as name, throws, n_pitches as n from pub_pitchers
+      where run_id = $1 and (case when $2::text = $3::text then is_home else team = $2::text and not is_home end)
+      order by n_pitches desc`,
+    [run.run_id, pitchingTeam, run.home_team]);
+  const ids = t.roster.map((r) => r.id);
+  const pids = ps.map((p) => p.id as string);
+  const k = run.meta.summary_keys;
+  const at = (name: string) => k.indexOf(name);
+  const rows = pids.length && ids.length ? await db().query(
+    `select pitcher_tm_id, batter_tm_id, side, summary from pub_matchups
+      where run_id = $1 and pitcher_tm_id = any($2::text[]) and batter_tm_id = any($3::text[])`,
+    [run.run_id, pids, ids]) : [];
+  const cells: Gameday["cells"] = {};
+  const n = (v: unknown) => (typeof v === "number" ? v : null);
+  for (const r of rows) {
+    const s = r.summary as unknown[];
+    (cells[r.batter_tm_id] ??= {})[r.pitcher_tm_id] = {
+      score: n(s[at("score")]), xrv100: n(s[at("xrv100")]), fit100: n(s[at("fit100")]),
+      sim: n(s[at("sim_pitches")]), conf: (s[at("confidence")] as string) ?? null, side: r.side,
+    };
+  }
+  return {
+    pitchers: ps.map((p) => ({ id: p.id, name: p.name, throws: p.throws, n: p.n })),
+    roster: t.roster, lastLineup: t.lineup, cells,
+  };
+}

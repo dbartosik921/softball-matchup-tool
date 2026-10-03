@@ -35,7 +35,7 @@ export default async function MatchupPage({ searchParams }: { searchParams: SP }
   }
   return (
     <>
-      <Header through={run.data_through} />
+      <Header through={run.data_through} tab="matchup" />
       <main>
         <div className="noprint">{picker}</div>
         <div style={{ height: 16 }} />

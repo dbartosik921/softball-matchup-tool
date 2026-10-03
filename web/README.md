@@ -12,6 +12,15 @@ Vercel:  this app reads the latest complete publish
 Coverage of a publish: every home-team pitcher vs every hitter on every roster in the latest season, and
 every opponent pitcher with 150+ tracked pitches vs the home team's hitters.
 
+## Pages
+
+- **Matchup** (`/`, `/matchup`): one pitcher vs an opponent's lineup and bench, or vs one batter, with the full report.
+- **Gameday** (`/gameday`): pick a pitching team and a hitting team; that team's pitchers run across the top and the
+  batting order is set with 1-9 dropdowns (only that team's hitters; starts from their last lineup). Each cell shows
+  Pitcher adv., xRV/100, Shape fit and Sample, with a PA-weighted lineup total per pitcher. Hitters not in the order
+  are listed alphabetically below. The order is kept in the URL, so a card can be bookmarked or printed.
+  Coverage follows the publish: home pitchers vs any team, other teams' pitchers vs the home team only.
+
 ## Environment variables (Vercel → Project → Settings → Environment Variables)
 
 | Name | Value |

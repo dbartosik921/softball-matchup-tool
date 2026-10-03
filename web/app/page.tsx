@@ -17,7 +17,7 @@ export default async function Home() {
   const nHome = ps.filter((p) => p.is_home).length;
   return (
     <>
-      <Header through={run.data_through} />
+      <Header through={run.data_through} tab="matchup" />
       <main>
         <h1>Pitcher vs opponent</h1>
         <p className="sub">{run.home_team} pitchers vs any team · opponents&apos; pitchers vs {run.home_team} ·
