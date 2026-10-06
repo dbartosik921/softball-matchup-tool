@@ -136,13 +136,14 @@ thrown by the sampled pitchers is predicted five ways and scored against what ha
 Skill = % lower error than the league baseline; a bootstrap over hitters gives 90% intervals. Each metric gets
 a plain verdict ("validated", "pitch shape adds value; hitter-specific part unproven", "hitter's overall rate
 is the best guide", "mostly noise"), which the HTML report prints in its Validation section. Tuning searches
-similarity width, recency half-life, three optional model features, and per-metric shrinkage strength. The optional
+similarity width, recency half-life, four optional model features, and per-metric shrinkage strength. The optional
 features stay off unless they beat "off" by more than noise (0.02 objective):
 
 | setting | what it does |
 |---|---|
 | `extension_weight` | adds release extension to pitch similarity (missing extension counts as league average) |
 | `prior_combine` | `add` (shape rate + hitter's level vs average) or `odds` (odds-ratio / log5 style, stays sane at extremes) |
+| `pitcher_effect` | 0 = off; otherwise adds her own excess over what her pitch shapes usually get (deception, command, sequencing), shrunk with this strength (lower = trust her results more) |
 | `borrow` | 0-1: compare each hitter with her 25 most similar hitters (whiff, chase, called-K, hard-hit, SLG profile) instead of all same-side hitters; helps thin-sample hitters |
 
 The report prints `model-log5`: how much the full model beats the classic log5 formula (* = with 90% confidence). `settings.json` is committed on purpose:

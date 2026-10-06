@@ -9,7 +9,7 @@ from . import engine, recency, shape
 PATH = Path(__file__).resolve().parents[1] / "settings.json"
 DEFAULTS = {"bandwidth": 0.3, "half_life_days": 60.0, "prior_scale": 1.0,
             # off by default; `backtest --tune` turns each on only if it predicts later games better
-            "prior_combine": "add", "borrow": 0.0, "extension_weight": 0.0}
+            "prior_combine": "add", "borrow": 0.0, "extension_weight": 0.0, "pitcher_effect": 0.0}
 
 
 def apply(values: dict) -> dict:
@@ -19,6 +19,7 @@ def apply(values: dict) -> dict:
     recency.HALF_LIFE_DAYS = float(v["half_life_days"])   # 'inf' -> no decay within the season
     engine.PRIOR_COMBINE = str(v["prior_combine"])
     engine.BORROW = float(v["borrow"])
+    engine.PITCHER_EFFECT = float(v["pitcher_effect"])
     shape.EXTENSION_WEIGHT = float(v["extension_weight"])
     ps = v["prior_scale"]
     engine.PRIOR_SCALE = {k: float(x) for k, x in ps.items()} if isinstance(ps, dict) else float(ps)

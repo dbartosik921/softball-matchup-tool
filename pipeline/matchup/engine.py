@@ -46,6 +46,10 @@ PRIOR_COMBINE = "add"
 BORROW = 0.0
 NEIGHBORS = 25
 ODDS_METRICS = {"whiff", "chase", "called_strike", "hard_hit", "obp"}
+# Pitcher effect beyond shape: how much better/worse her own results on each pitch are than pitches of that
+# shape get from the same hitters, shrunk (strength = metric prior strength x PITCHER_EFFECT), then added to
+# every hitter's prior for that pitch. 0 = off. Captures deception, command, sequencing - what shape misses.
+PITCHER_EFFECT = 0.0
 # metric -> exposure (share of pitches the rate applies to)
 _EXPOSURE = {"whiff": "sw", "called_strike": "n", "chase": "oz", "hard_hit": "bip"}
 
@@ -257,6 +261,27 @@ def _prior(sd: SideData, S: np.ndarray, pop_r: dict) -> dict:
     return {m: combine(m, ref_shape[m], sd.overall[m], ref_all[m]) for m in METRICS}
 
 
+def pitcher_effect(sd: SideData, w: np.ndarray, prior: dict) -> dict:
+    """Per metric: her shrunk excess over what her opponents were expected to do vs this shape, on her own
+    pitches of this type (w: recency weight, 0 for everyone else's pitches). expected = each pitch's batter
+    prior (shape + that hitter's level), so facing weak lineups doesn't count as pitcher skill."""
+    out = {m: 0.0 for m in METRICS}
+    mine = w > 0
+    if PITCHER_EFFECT <= 0 or not mine.any():
+        return out
+    wm = w[mine]
+    codes = sd.codes[mine]
+    ind = sd.ind[mine]
+    for m, (num, den, base) in METRICS.items():
+        d = wm * ind[:, IDX[den]]
+        if d.sum() <= 0:
+            continue
+        got = float((wm * ind[:, IDX[num]]).sum())
+        exp = float((d * prior[m][codes]).sum())
+        out[m] = (got - exp) / (d.sum() + base * PITCHER_EFFECT)
+    return out
+
+
 def shape_fit(row: dict, exposure: dict, lg) -> float:
     """Runs per 100 pitches: the hitter's own deviation from her prior (shape + overall skill) on each
     validated component, times how often that component comes up vs this pitch shape, times what the
@@ -296,6 +321,12 @@ def evaluate(hist: pd.DataFrame, arsenal: Arsenal, lg, batter_ids: list[str],
         sd = ctx.side(p_hand, side)
         nb = len(sd.batters)
         cl_pitches = _frame(arsenal.pitches, side)
+        # her own pitches in the pool, assigned to her pitch types (for the pitcher effect)
+        mine_cl = np.full(len(sd.codes), -1.0)
+        if PITCHER_EFFECT > 0 and "pitcher_tm_id" in sd.pool:
+            mine = sd.pool["pitcher_tm_id"].to_numpy() == arsenal.pitcher_id
+            if mine.any() and arsenal.model is not None:
+                mine_cl[mine] = arsenal.assign(sd.pool[mine]).fillna(-1).to_numpy()
         wanted_codes = [sd.code_of[b] for b in sd.batters if b in want]
         xrv = {"all": np.zeros(nb), "2k": np.zeros(nb)}
         for split in ("all", "2k"):
@@ -312,6 +343,9 @@ def evaluate(hist: pd.DataFrame, arsenal: Arsenal, lg, batter_ids: list[str],
                 pop_rows.append({"side": side, "split": split, "cluster": c.cid, "label": c.label,
                                  "sim_pitches": float(S[:, 0].sum()), **pop_r})
                 prior = _clip_prior(_prior(sd, S, pop_r))
+                pfx = pitcher_effect(sd, sd.r * smask * (mine_cl == c.cid), prior)
+                if any(pfx.values()):
+                    prior = _clip_prior({m: prior[m] + pfx[m] for m in METRICS})
                 shrunk = _rates(S, prior)
                 raw = _rates(S)
                 xrv[split] += usage.get(c.cid, 0.0) * shrunk["rv"] * 100
@@ -323,6 +357,7 @@ def evaluate(hist: pd.DataFrame, arsenal: Arsenal, lg, batter_ids: list[str],
                     row.update({m: float(shrunk[m][i]) for m in mnames})
                     row.update({f"raw_{m}": float(raw[m][i]) for m in mnames})
                     row.update({f"pop_{m}": float(pop_r[m]) for m in mnames})
+                    row.update({f"pitfx_{m}": float(pfx[m]) for m in METRICS})
                     row["base_rv"] = float(prior["rv"][i])  # expected rv vs this shape from overall skill alone
                     row.update({f"prior_{m}": float(prior[m][i]) for m in METRICS})
                     row.update({f"bat_{m}": float(sd.overall[m][i]) for m in METRICS})

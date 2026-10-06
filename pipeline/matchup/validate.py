@@ -259,6 +259,7 @@ GRID_PRIOR = (0.5, 1.0, 2.0, 4.0, 8.0, 16.0)
 GRID_EXTENSION = (0.0, 0.25, 0.5)
 GRID_COMBINE = ("add", "odds")
 GRID_BORROW = (0.0, 0.5, 1.0)
+GRID_PITCHER = (0.0, 0.5, 1.0, 4.0)   # 0 = off; else shrinkage strength (lower = trust her own results more)
 TUNED_METRICS = ["whiff", "chase", "called_strike", "hard_hit", "rv"]
 
 
@@ -279,7 +280,7 @@ def tune(prep: Prepared, start: dict, log=print) -> tuple[dict, list[dict]]:
         _, sc = run_with(prep, values)
         obj = objective(sc)
         row = {"step": label, **{k: values.get(k) for k in ("bandwidth", "half_life_days", "extension_weight",
-                                                             "prior_combine", "borrow")},
+                                                             "prior_combine", "borrow", "pitcher_effect")},
                "prior_scale": json_safe(values["prior_scale"]), "objective": obj,
                **{f"skill_{r.metric}": r.skill_model for r in sc.itertuples()}}
         trials.append(row)
@@ -292,6 +293,9 @@ def tune(prep: Prepared, start: dict, log=print) -> tuple[dict, list[dict]]:
     log("tuning recency half-life...")
     scores = {hl: trial({**best, "half_life_days": hl}, f"half-life {hl:g} days")[0] for hl in GRID_HALF_LIFE}
     best["half_life_days"] = max(scores, key=scores.get)
+    log("tuning pitcher effect beyond shape...")
+    scores = {x: trial({**best, "pitcher_effect": x}, f"pitcher effect {x:g}")[0] for x in GRID_PITCHER}
+    best["pitcher_effect"] = _keep_default(scores, 0.0)
     log("tuning release extension in similarity...")
     scores = {x: trial({**best, "extension_weight": x}, f"extension weight {x:g}")[0] for x in GRID_EXTENSION}
     best["extension_weight"] = _keep_default(scores, 0.0)

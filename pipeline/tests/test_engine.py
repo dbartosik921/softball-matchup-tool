@@ -238,3 +238,32 @@ def test_combine_math():
         assert engine.combine("whiff", 0.40, 0.30, 0.20) == pytest.approx(0.50)
     finally:
         engine.PRIOR_COMBINE = "add"
+
+
+def test_pitcher_effect_beyond_shape(league, burnham):
+    """A pitcher who gets more whiffs than her pitch shapes explain: the effect finds it (only when on),
+    and a pitcher who is exactly as good as her shapes gets ~no effect."""
+    from matchup import settings
+    _, lg, hist = league
+    a, _ = burnham
+    aub = sorted(hist[hist.batter_team == "AUB_TIG_SB"].batter_tm_id.unique())
+    h = hist.copy()
+    contact = h.index[(h.pitcher_tm_id == a.pitcher_id) & h.is_swing & ~h.is_whiff]
+    flip = contact[::2]                                   # half her contacted swings become misses
+    h.loc[flip, "is_whiff"] = True
+    try:
+        settings.apply({**settings.DEFAULTS, "pitcher_effect": 1.0})
+        on = evaluate(h, a, lg, aub).detail
+        plain = evaluate(hist, a, lg, aub).detail
+        settings.apply(settings.DEFAULTS)
+        off = evaluate(h, a, lg, aub).detail
+    finally:
+        settings.apply(settings.DEFAULTS)
+    assert (off.pitfx_whiff == 0).all()
+    allc = on[on.split == "all"]
+    assert allc.pitfx_whiff.min() > 0.03                 # every pitch type: she gets more whiffs than its shape
+    assert on[on.split == "2k"].pitfx_whiff.mean() > 0   # thinner two-strike samples: shrunk, same direction
+    k = ["batter_tm_id", "side", "split", "cluster"]
+    m = allc.merge(off, on=k, suffixes=("", "_off"))
+    assert (m.prior_whiff > m.prior_whiff_off).all()     # every hitter's starting point vs her moves up
+    assert plain.pitfx_whiff.abs().max() < 0.05          # unaltered pitcher: about what her shapes predict
