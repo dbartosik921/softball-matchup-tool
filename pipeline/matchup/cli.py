@@ -282,7 +282,8 @@ def cmd_backtest(args, conn) -> int:
         log(f"\nobjective: defaults {V.objective(base):+.3f} -> tuned {V.objective(sc):+.3f}")
     verdicts = {r["metric"]: V.verdict(r) for _, r in sc.iterrows()}
     log(f"\n{len(prep.arsenals)} pitchers, {len(pred):,} test pitches, {time.time() - t0:.0f}s")
-    path = out_dir / f"backtest_{date.today():%Y%m%d}.txt"
+    from datetime import datetime
+    path = out_dir / f"backtest_{datetime.now():%Y%m%d_%H%M}_split{cfg.split}{'_tuned' if args.tune else ''}.txt"
     path.write_text("\n".join(lines))
     print(f"saved {path}")
     if args.apply:
