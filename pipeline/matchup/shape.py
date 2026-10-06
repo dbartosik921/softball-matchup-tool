@@ -21,6 +21,20 @@ SIMILARITY_WEIGHTS = {"rel_speed": 1.0, "induced_vert_break": 1.0, "hb_in": 1.0,
                       "rel_height": 0.1, "rel_side_in": 0.1, "vaa_adj": 0.75}
 
 
+# Optional: release extension (how far in front of the rubber she lets go). 0 = not used. The backtest tunes it;
+# missing extension counts as league-average so those pitches aren't dropped.
+EXTENSION_WEIGHT = 0.0
+
+
+def similarity_features(scale: dict | None = None) -> tuple[list[str], list[float]]:
+    feats = list(SIMILARITY_FEATURES)
+    w = [SIMILARITY_WEIGHTS[f] for f in feats]
+    if EXTENSION_WEIGHT > 0 and (scale is None or "extension" in scale):
+        feats.append("extension")
+        w.append(EXTENSION_WEIGHT)
+    return feats, w
+
+
 def fit_vaa_slope(p: pd.DataFrame) -> float:
     t = p[p["pitch_tracked"]]
     if len(t) < 20:
@@ -42,17 +56,22 @@ def league_scale(p: pd.DataFrame) -> dict[str, dict[str, float]]:
     """Mean/std per feature over tracked pitches. Horizontal features are standardized with
     mean 0 because their sign carries meaning (arm side / toward the batter)."""
     t = p[p["pitch_tracked"]]
-    cols = sorted(set(CLUSTER_FEATURES + SIMILARITY_FEATURES))
+    cols = sorted(set(CLUSTER_FEATURES + SIMILARITY_FEATURES) | ({"extension"} if "extension" in t and t["extension"].notna().any() else set()))
     out = {}
     for c in cols:
-        sd = float(t[c].std()) if len(t) > 1 else 1.0
+        sd = float(t[c].std()) if t[c].notna().sum() > 1 else 1.0
         out[c] = {"mean": 0.0 if c in ("hb_arm", "hb_in", "rel_side_in") else float(t[c].mean()),
                   "std": sd if sd and sd == sd and sd > 1e-6 else 1.0}
     return out
 
 
 def standardize(df: pd.DataFrame, cols: list[str], scale: dict) -> np.ndarray:
-    return np.column_stack([(df[c].to_numpy(float) - scale[c]["mean"]) / scale[c]["std"] for c in cols])
+    def col(c):
+        v = df[c].to_numpy(float) if c in df else np.full(len(df), scale[c]["mean"])
+        if c == "extension":   # optional feature: missing = league average (no pull either way)
+            v = np.where(np.isfinite(v), v, scale[c]["mean"])
+        return (v - scale[c]["mean"]) / scale[c]["std"]
+    return np.column_stack([col(c) for c in cols])
 
 
 def hard_hit_threshold(p: pd.DataFrame, quantile: float = 0.75) -> float | None:

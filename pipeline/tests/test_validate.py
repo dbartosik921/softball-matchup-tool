@@ -96,3 +96,22 @@ def test_hurt_verdict():
            "model_vs_prior_lo": -0.07, "model_vs_prior_hi": -0.03, "model_vs_batter_lo": -0.1,
            "model_vs_batter_hi": 0.2, "prior_vs_batter_lo": 0.01, "prior_vs_batter_hi": 0.3}
     assert "HURTS" in V.verdict(row)
+
+
+def test_log5_baseline():
+    # pitcher at league average -> log5 is just the hitter; all three equal -> unchanged
+    assert V._log5(np.array([0.3]), np.array([0.2]), np.array([0.2]), "whiff")[0] == pytest.approx(0.3)
+    assert V._log5(np.array([0.3]), np.array([0.3]), np.array([0.2]), "whiff")[0] > 0.3
+    assert V._log5(0.02, 0.01, 0.0, "rv") == pytest.approx(0.03)
+
+
+def test_backtest_reports_log5(prep):
+    _, sc = V.run_with(prep, settings.DEFAULTS)
+    assert "skill_log5" in sc and "model_vs_log5" in sc
+    assert "model-log5" in V.describe(sc, "t")
+
+
+def test_optional_features_need_a_real_gain():
+    assert V._keep_default({0.0: 1.00, 0.5: 1.01}, 0.0) == 0.0     # inside noise: keep it off
+    assert V._keep_default({0.0: 1.00, 0.5: 1.10}, 0.0) == 0.5
+    assert V._keep_default({"add": 1.0, "odds": 1.5}, "add") == "odds"

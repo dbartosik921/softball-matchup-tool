@@ -128,6 +128,7 @@ thrown by the sampled pitchers is predicted five ways and scored against what ha
 |---|---|
 | league | league rate for this pitcher hand x batter side |
 | batter | the hitter's own rate vs this hand |
+| log5 | the classic odds-ratio matchup formula: hitter's rate x pitcher's rate / league rate (no pitch shape) |
 | shape | all same-side hitters vs pitches shaped like this one |
 | prior | shape + hitter's overall skill |
 | model | prior + the hitter's own history vs similar pitches (what the report shows) |
@@ -135,7 +136,16 @@ thrown by the sampled pitchers is predicted five ways and scored against what ha
 Skill = % lower error than the league baseline; a bootstrap over hitters gives 90% intervals. Each metric gets
 a plain verdict ("validated", "pitch shape adds value; hitter-specific part unproven", "hitter's overall rate
 is the best guide", "mostly noise"), which the HTML report prints in its Validation section. Tuning searches
-similarity width, recency half-life and per-metric shrinkage strength. `settings.json` is committed on purpose:
+similarity width, recency half-life, three optional model features, and per-metric shrinkage strength. The optional
+features stay off unless they beat "off" by more than noise (0.02 objective):
+
+| setting | what it does |
+|---|---|
+| `extension_weight` | adds release extension to pitch similarity (missing extension counts as league average) |
+| `prior_combine` | `add` (shape rate + hitter's level vs average) or `odds` (odds-ratio / log5 style, stays sane at extremes) |
+| `borrow` | 0-1: compare each hitter with her 25 most similar hitters (whiff, chase, called-K, hard-hit, SLG profile) instead of all same-side hitters; helps thin-sample hitters |
+
+The report prints `model-log5`: how much the full model beats the classic log5 formula (* = with 90% confidence). `settings.json` is committed on purpose:
 it holds tuning results, not player data.
 
 ### Damaged IDs and duplicate games

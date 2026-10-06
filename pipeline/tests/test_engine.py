@@ -192,3 +192,49 @@ def test_shape_fit_uses_only_validated_components(league, burnham, tmp_path, mon
         assert "No outcome passed" in report._fit_cell(np.nan)
     finally:
         engine.FIT_COMPONENTS, engine.BANDWIDTH, engine.PRIOR_SCALE, recency.HALF_LIFE_DAYS = keep
+
+
+def test_prior_options(league, burnham):
+    """Defaults reproduce the original additive prior; odds-ratio and similar-hitter borrowing change the
+    starting point but keep it a valid rate, and the planted tendencies survive both."""
+    from matchup import engine, settings, shape
+    _, lg, hist = league
+    a, base = burnham
+    aub = sorted(hist[hist.batter_team == "AUB_TIG_SB"].batter_tm_id.unique())
+    keys = ["batter_tm_id", "side", "split", "cluster"]
+    try:
+        settings.apply({**settings.DEFAULTS, "prior_combine": "odds", "borrow": 1.0})
+        alt = evaluate(hist, a, lg, aub)
+        m = base.detail.merge(alt.detail, on=keys, suffixes=("", "_alt"))
+        assert len(m) == len(base.detail)
+        for k in ("prior_whiff", "prior_chase", "prior_hard_hit"):
+            assert m[f"{k}_alt"].between(0, 1).all()
+            assert (m[k] - m[f"{k}_alt"]).abs().max() > 1e-4          # it does change something
+        d = alt.detail[alt.detail.split == "all"].set_index(["batter_tm_id", "label"])
+        ids = _name_ids(hist)
+        rise = d.loc[(ids["Weak, Rise"], "Riseball")]
+        assert rise.whiff > rise.pop_whiff + 0.05
+        # release extension as a feature: runs, and pitches with missing extension aren't dropped
+        settings.apply({**settings.DEFAULTS, "extension_weight": 0.5})
+        h2 = hist.copy()
+        h2.loc[h2.index[::3], "extension"] = np.nan
+        ext = evaluate(h2, a, lg, aub)
+        assert ext.population.sim_pitches.sum() > 0.5 * base.population.sim_pitches.sum()
+    finally:
+        settings.apply(settings.DEFAULTS)
+    assert engine.PRIOR_COMBINE == "add" and engine.BORROW == 0 and shape.EXTENSION_WEIGHT == 0
+
+
+def test_combine_math():
+    from matchup import engine
+    try:
+        engine.PRIOR_COMBINE = "odds"
+        # a hitter exactly at the base rate leaves the shape rate unchanged; extremes stay inside (0, 1)
+        assert engine.combine("whiff", 0.40, 0.20, 0.20) == pytest.approx(0.40)
+        assert 0.40 < engine.combine("whiff", 0.40, 0.30, 0.20) < 0.55
+        assert engine.combine("whiff", 0.90, 0.60, 0.20) < 1.0
+        assert engine.combine("rv", 0.01, 0.03, 0.0) == pytest.approx(0.04)   # run value stays additive
+        engine.PRIOR_COMBINE = "add"
+        assert engine.combine("whiff", 0.40, 0.30, 0.20) == pytest.approx(0.50)
+    finally:
+        engine.PRIOR_COMBINE = "add"

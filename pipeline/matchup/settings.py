@@ -4,10 +4,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from . import engine, recency
+from . import engine, recency, shape
 
 PATH = Path(__file__).resolve().parents[1] / "settings.json"
-DEFAULTS = {"bandwidth": 0.3, "half_life_days": 60.0, "prior_scale": 1.0}
+DEFAULTS = {"bandwidth": 0.3, "half_life_days": 60.0, "prior_scale": 1.0,
+            # off by default; `backtest --tune` turns each on only if it predicts later games better
+            "prior_combine": "add", "borrow": 0.0, "extension_weight": 0.0}
 
 
 def apply(values: dict) -> dict:
@@ -15,6 +17,9 @@ def apply(values: dict) -> dict:
     engine.FIT_COMPONENTS = ("whiff", "hard_hit")
     engine.BANDWIDTH = float(v["bandwidth"])
     recency.HALF_LIFE_DAYS = float(v["half_life_days"])   # 'inf' -> no decay within the season
+    engine.PRIOR_COMBINE = str(v["prior_combine"])
+    engine.BORROW = float(v["borrow"])
+    shape.EXTENSION_WEIGHT = float(v["extension_weight"])
     ps = v["prior_scale"]
     engine.PRIOR_SCALE = {k: float(x) for k, x in ps.items()} if isinstance(ps, dict) else float(ps)
     return v
@@ -35,6 +40,7 @@ def load() -> dict:
 
 def save(values: dict, validation: dict | None = None) -> Path:
     from .validate import json_safe
+    values = {**DEFAULTS, **values}
     out = {k: json_safe(values[k]) for k in DEFAULTS}
     if validation:
         out["validation"] = validation

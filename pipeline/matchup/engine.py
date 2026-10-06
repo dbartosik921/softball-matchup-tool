@@ -37,6 +37,15 @@ PRIOR_SCALE: dict[str, float] | float = 1.0   # multiplies prior strengths; per 
 # Shape fit is built only from components whose hitter-specific part the backtest validated
 # (settings.load() sets this from the saved verdicts). Default before any backtest: whiff + hard-hit.
 FIT_COMPONENTS: tuple[str, ...] = ("whiff", "hard_hit")
+# How the prior combines 'hitters vs this shape' with 'this hitter vs everyone':
+#   "add"  shape rate + (hitter's overall rate - population rate)
+#   "odds" odds ratio (log5): shape odds x hitter odds / population odds; stays inside 0-100% at the extremes
+PRIOR_COMBINE = "add"
+# Similar-hitter borrowing (SEAM-style): 0 = compare with all same-side hitters; 1 = compare with the
+# NEIGHBORS hitters whose overall profile (whiff, chase, called-K, hard-hit, SLG vs this hand) is closest.
+BORROW = 0.0
+NEIGHBORS = 25
+ODDS_METRICS = {"whiff", "chase", "called_strike", "hard_hit", "obp"}
 # metric -> exposure (share of pitches the rate applies to)
 _EXPOSURE = {"whiff": "sw", "called_strike": "n", "chase": "oz", "hard_hit": "bip"}
 
@@ -59,6 +68,15 @@ SHAPE_REQUIRED = ["horz_break", "rel_side", "vaa_adj", "rel_speed", "induced_ver
 def prior_strength(m: str) -> float:
     scale = PRIOR_SCALE.get(m, 1.0) if isinstance(PRIOR_SCALE, dict) else PRIOR_SCALE
     return METRICS[m][2] * scale
+
+
+def combine(m: str, shape_rate, hitter_rate, base_rate):
+    """Prior for metric m: how hitters do vs this shape, adjusted for this hitter's level relative to `base`."""
+    if PRIOR_COMBINE == "odds" and m in ODDS_METRICS:
+        c = lambda x: np.clip(np.asarray(x, float), 0.005, 0.995)  # noqa: E731
+        o = c(shape_rate) / (1 - c(shape_rate)) * c(hitter_rate) / (1 - c(hitter_rate)) / (c(base_rate) / (1 - c(base_rate)))
+        return o / (1 + o)
+    return np.asarray(shape_rate, float) + np.asarray(hitter_rate, float) - np.asarray(base_rate, float)
 
 
 def indicators(df: pd.DataFrame, hard_hit: float) -> np.ndarray:
@@ -90,8 +108,8 @@ def _frame(df: pd.DataFrame, side: str) -> pd.DataFrame:
 
 
 def _X(df: pd.DataFrame, lg) -> np.ndarray:
-    X = shape.standardize(df, shape.SIMILARITY_FEATURES, lg.scale)
-    return X * np.sqrt([shape.SIMILARITY_WEIGHTS[f] for f in shape.SIMILARITY_FEATURES])
+    feats, w = shape.similarity_features(lg.scale)
+    return shape.standardize(df, feats, lg.scale) * np.sqrt(w)
 
 
 def kernel(Xpool: np.ndarray, Xc: np.ndarray) -> np.ndarray:
@@ -147,6 +165,32 @@ class SideData:
     ind: np.ndarray
     r: np.ndarray
     two: np.ndarray
+    pop1: dict = None          # metric -> population rate vs this hand from this side
+    _W: object = None          # similar-hitter weights (sparse, rows sum to 1), built on first use
+
+    def neighbors(self):
+        """Row-normalized weights over each hitter's NEIGHBORS most similar qualified hitters (not herself)."""
+        if self._W is None:
+            from scipy import sparse
+            from sklearn.neighbors import NearestNeighbors
+            prof = np.column_stack([self.overall[m] for m in ("whiff", "chase", "called_strike", "hard_hit", "slg")])
+            qual = np.flatnonzero(self.counts >= REFERENCE_MIN_PITCHES)
+            nb = len(self.batters)
+            if len(qual) < 3:
+                self._W = sparse.csr_matrix((nb, nb))
+                return self._W
+            mu, sdv = prof[qual].mean(0), prof[qual].std(0) + 1e-9
+            Z = (prof - mu) / sdv
+            k = min(NEIGHBORS + 1, len(qual))
+            dist, idx = NearestNeighbors(n_neighbors=k).fit(Z[qual]).kneighbors(Z)
+            rows, cols = [], []
+            for i in range(nb):
+                js = [qual[j] for j in idx[i] if qual[j] != i][: k - 1]
+                rows += [i] * len(js)
+                cols += js
+            W = sparse.csr_matrix((np.ones(len(rows)), (rows, cols)), shape=(nb, nb))
+            self._W = sparse.diags(1 / np.maximum(np.asarray(W.sum(1)).ravel(), 1)) @ W
+        return self._W
 
 
 @dataclass
@@ -189,9 +233,28 @@ class Context:
         pool = _frame(h[ok], side)
         sd = SideData(np.asarray(batters), {b: i for i, b in enumerate(batters)}, np.bincount(codes, minlength=nb),
                       skill, overall, pool, _X(pool, self.lg), codes[ok], ind[ok], r[ok],
-                      h["is_two_strike"].to_numpy(bool)[ok])
+                      h["is_two_strike"].to_numpy(bool)[ok], pop1=pop1)
         self._sides[key] = sd
         return sd
+
+
+def _prior(sd: SideData, S: np.ndarray, pop_r: dict) -> dict:
+    """Each hitter's starting point vs this shape: a reference group's rate vs the shape, adjusted for how
+    she compares with that group overall. Reference = all same-side hitters, blended (BORROW) with her
+    most similar hitters."""
+    nb = len(sd.batters)
+    ref_shape = {m: np.full(nb, pop_r[m]) for m in METRICS}
+    ref_all = {m: np.full(nb, sd.pop1[m]) for m in METRICS}
+    if BORROW > 0:
+        W = sd.neighbors()
+        has = np.asarray(W.sum(1)).ravel() > 0
+        N = np.asarray(W @ S)                                      # neighbors' summed outcomes vs this shape
+        nb_shape = _rates(N, {m: ref_shape[m] for m in METRICS})   # shrunk toward the population
+        for m in METRICS:
+            nb_all = np.asarray(W @ sd.overall[m]).ravel()
+            ref_shape[m] = np.where(has, (1 - BORROW) * pop_r[m] + BORROW * nb_shape[m], pop_r[m])
+            ref_all[m] = np.where(has, (1 - BORROW) * sd.pop1[m] + BORROW * nb_all, sd.pop1[m])
+    return {m: combine(m, ref_shape[m], sd.overall[m], ref_all[m]) for m in METRICS}
 
 
 def shape_fit(row: dict, exposure: dict, lg) -> float:
@@ -248,7 +311,7 @@ def evaluate(hist: pd.DataFrame, arsenal: Arsenal, lg, batter_ids: list[str],
                 expo = {m: (tot[IDX[col]] / tot[IDX["n"]] if tot[IDX["n"]] > 0 else 0.0) for m, col in _EXPOSURE.items()}
                 pop_rows.append({"side": side, "split": split, "cluster": c.cid, "label": c.label,
                                  "sim_pitches": float(S[:, 0].sum()), **pop_r})
-                prior = _clip_prior({m: pop_r[m] + sd.skill[m] for m in METRICS})
+                prior = _clip_prior(_prior(sd, S, pop_r))
                 shrunk = _rates(S, prior)
                 raw = _rates(S)
                 xrv[split] += usage.get(c.cid, 0.0) * shrunk["rv"] * 100
