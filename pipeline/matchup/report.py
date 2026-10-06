@@ -151,6 +151,15 @@ def _detail(res: Result, bid: str, name: str, side: str) -> str:
             + "\n".join(rows) + "</table></div></details>")
 
 
+def _pitcher_effect_note() -> str:
+    from . import engine
+    if engine.PITCHER_EFFECT <= 0:
+        return ""
+    return ("That starting point also includes the <b>pitcher effect</b>: how much better or worse her own results on each "
+            "pitch have been than pitches of that shape usually get from the same hitters (deception, command, sequencing), "
+            "shrunk the same way.")
+
+
 def _validation_html() -> str:
     from . import settings
     v = settings.validation()
@@ -236,6 +245,7 @@ Positive arm-side break = toward her arm side. Usage is recency-weighted.</p>
 how closely it matches that cluster's shape from the hitter's side (velo, vertical and horizontal break toward/away from the hitter,
 release height and side, approach angle) and by how recent it is. <b>Rates are shrunk</b> toward how all same-side hitters did against
 that shape, adjusted for the hitter's overall skill, so a 3-for-5 sample doesn't read as a trend; hover shows the raw rate.
+{_pitcher_effect_note()}
 <b>Pitcher adv.</b> = expected runs per 100 pitches vs her arsenal, as a percentile among qualified D1 hitters (higher = better for her);
 it mostly reflects how good the hitter is overall. <b>Shape fit</b> isolates the matchup itself: how the hitter does against pitches shaped like hers compared with what
 her overall level predicts, converted to runs per 100 pitches. It uses only the outcomes that passed the backtest

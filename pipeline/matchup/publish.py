@@ -262,7 +262,9 @@ def publish(conn, df_all: pd.DataFrame, lg: League, hist: pd.DataFrame, home: st
         "n_games": lg.n_games, "hard_hit_mph": lg.hard_hit_mph, "season": p.season,
         "slot_pa": [float(x) for x in L.expected_pa_by_slot(hist)],
         "fit_components": list(engine.FIT_COMPONENTS), "validation": settings.validation(),
-        "settings": {"bandwidth": engine.BANDWIDTH, "prior_scale": engine.PRIOR_SCALE},
+        "settings": {"bandwidth": engine.BANDWIDTH, "prior_scale": engine.PRIOR_SCALE,
+                     "prior_combine": engine.PRIOR_COMBINE, "borrow": engine.BORROW,
+                     "pitcher_effect": engine.PITCHER_EFFECT},
         "summary_keys": SUMMARY_KEYS, "detail_keys": DETAIL_KEYS,
         "league_ops": league_ops(hist), "zone_edges": {"x": list(zones.X_EDGES), "y": list(zones.Y_EDGES)},
     }

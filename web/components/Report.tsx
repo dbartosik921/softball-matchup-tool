@@ -155,6 +155,9 @@ export default function Report({ run, p, team, rows, batter }: {
       <th>2K Whiff %</th><th>2K Chase %</th><th>Sample</th><th className="l">Vs her</th></tr></thead>
   );
   const val = run.meta.validation ?? {};
+  // publishes before 2026-10-05 don't record it; the tuned settings had it on from then
+  const pe = (run.meta as { settings?: { pitcher_effect?: number } }).settings?.pitcher_effect;
+  const pitcherEffect = pe === undefined || pe > 0;
 
   return (
     <>
@@ -238,6 +241,8 @@ export default function Report({ run, p, team, rows, batter }: {
         how closely it matches that cluster&apos;s shape from the hitter&apos;s side (velo, vertical and horizontal break toward/away from the hitter,
         release height and side, approach angle) and by how recent it is. <b>Rates are shrunk</b> toward how all same-side hitters did against
         that shape, adjusted for the hitter&apos;s overall skill, so a 3-for-5 sample doesn&apos;t read as a trend; hover shows the raw rate.{" "}
+        {pitcherEffect && <>That starting point also includes the <b>pitcher effect</b>: how much better or worse her own results on each
+        pitch have been than pitches of that shape usually get from the same hitters (deception, command, sequencing), shrunk the same way.{" "}</>}
         <b>Pitcher adv.</b> = expected runs per 100 pitches vs her arsenal, as a percentile among qualified D1 hitters (higher = better for her);
         it mostly reflects how good the hitter is overall. <b>Shape fit</b> isolates the matchup itself: how the hitter does against pitches shaped
         like hers compared with what her overall level predicts, converted to runs per 100 pitches. It uses only the outcomes that passed the
